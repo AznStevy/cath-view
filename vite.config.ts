@@ -1,8 +1,8 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  // Relative paths so GitHub Pages / any subpath host works
-  base: "./",
+  // Must match the GitHub Pages project path: https://<user>.github.io/cath-view/
+  base: "/cath-view/",
   server: {
     port: 5173,
   },
