@@ -135,6 +135,16 @@ function buildUI(root: HTMLElement): {
           </div>
         </aside>
         <button type="button" class="panel-expand" id="btn-expand" title="Show panel" aria-label="Show panel">Panel</button>
+        <div class="angle-mini" id="angle-mini" aria-live="polite">
+          <div class="angle-mini-row">
+            <span class="angle-mini-label">Oblique</span>
+            <span class="angle-mini-value" id="oblique-mini">AP</span>
+          </div>
+          <div class="angle-mini-row">
+            <span class="angle-mini-label">Angulation</span>
+            <span class="angle-mini-value" id="angulation-mini">0°</span>
+          </div>
+        </div>
       </div>
 
       <p class="hint">
@@ -184,6 +194,8 @@ function buildUI(root: HTMLElement): {
     "panel-shell",
     "btn-collapse",
     "btn-expand",
+    "oblique-mini",
+    "angulation-mini",
     "vessel-tooltip",
   ] as const;
 
@@ -345,6 +357,8 @@ function main() {
     els["angulation-label"].textContent = isCranial ? "Cranial" : "Caudal";
     els["oblique-readout"].textContent = formatOblique(state.primary);
     els["angulation-readout"].textContent = formatAngulation(state.secondary);
+    els["oblique-mini"].textContent = formatOblique(state.primary);
+    els["angulation-mini"].textContent = formatAngulation(state.secondary);
 
     els["btn-lao"].classList.toggle("active", isLao);
     els["btn-rao"].classList.toggle("active", !isLao);

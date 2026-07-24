@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Cath View">
+  <rect width="32" height="32" rx="7" fill="#0c1620"/>
+  <!-- Coronary bifurcation: LM ? LAD / LCx (+ small RCA) -->
+  <path
+    d="M16 7v5M16 12l-6 7v6M10 19l2.5 3.5M16 12l6 6.5v6.5M22 18.5l-2 3.5M16 12l5.5 1.5 4-.8"
+    fill="none"
+    stroke="#3db8c8"
+    stroke-width="2.15"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <circle cx="16" cy="7" r="1.55" fill="#7ee0ea"/>
+</svg>
