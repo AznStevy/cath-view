@@ -151,7 +151,7 @@ function buildUI(root: HTMLElement): {
 
       <p class="hint">
         Drag to rotate · Scroll to zoom · Arrows adjust angles
-        <kbd>R</kbd> reset AP · <kbd>P</kbd> hide panel
+        <kbd>R</kbd> reset AP · <kbd>P</kbd> panel
       </p>
 
       <div id="vessel-tooltip" class="vessel-tooltip" hidden>
@@ -620,7 +620,7 @@ function main() {
 
     if (e.key === "p" || e.key === "P") {
       e.preventDefault();
-      setPanelCollapsed(true);
+      setPanelCollapsed(!panelShell.classList.contains("collapsed"));
       return;
     }
 
