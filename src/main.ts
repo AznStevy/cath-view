@@ -53,14 +53,18 @@ function buildUI(root: HTMLElement): {
     <div id="viewport"></div>
     <div class="hud">
       <header class="brand">
-        <h1>Cath View</h1>
+        <h1>Cath<span>View</span></h1>
       </header>
 
       <div class="panel-shell" id="panel-shell">
         <aside class="panel" id="panel" aria-label="Controls">
           <div class="panel-top">
             <h2>View</h2>
-            <button type="button" class="panel-collapse" id="btn-collapse" title="Hide panel" aria-label="Hide panel">›</button>
+            <button type="button" class="panel-collapse" id="btn-collapse" title="Hide panel" aria-label="Hide panel">
+              <svg class="collapse-chevron" viewBox="0 0 12 12" aria-hidden="true">
+                <path d="M2.2 4.2 L6 8 L9.8 4.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
           </div>
 
           <div class="angle-readout">
@@ -132,6 +136,11 @@ function buildUI(root: HTMLElement): {
         </aside>
         <button type="button" class="panel-expand" id="btn-expand" title="Show panel" aria-label="Show panel">Panel</button>
       </div>
+
+      <p class="hint">
+        Drag to rotate · Scroll to zoom · Arrows adjust angles
+        <kbd>R</kbd> reset AP
+      </p>
 
       <div id="vessel-tooltip" class="vessel-tooltip" hidden>
         <div class="vessel-tooltip-name"></div>
@@ -294,31 +303,30 @@ function main() {
   }
   applyVesselVisibility();
 
+  const lookGoal = new THREE.Vector3(0, -0.15, 0);
+  const camGoal = cathCameraPosition(state, CAMERA_DISTANCE);
+  /** 1 = snap, lower = smoother follow while dragging sliders / holding keys */
+  let camLerp = 1;
+
   function applyCathCamera(animate = false) {
-    const target = cathCameraPosition(state, CAMERA_DISTANCE);
-    const look = new THREE.Vector3(0, -0.15, 0);
-    if (!animate) {
-      camera.position.copy(target);
-      camera.lookAt(look);
-      controls.target.copy(look);
-      controls.update();
-      return;
+    camGoal.copy(cathCameraPosition(state, CAMERA_DISTANCE));
+    lookGoal.set(0, -0.15, 0);
+    camLerp = animate ? 0.12 : 0.28;
+    if (!animate && camera.position.distanceTo(camGoal) > 2.5) {
+      camLerp = 1;
     }
-    const start = camera.position.clone();
-    const startTarget = controls.target.clone();
-    let t = 0;
-    const duration = 0.4;
-    const tick = () => {
-      t += 1 / 60;
-      const k = Math.min(1, t / duration);
-      const e = 1 - Math.pow(1 - k, 3);
-      camera.position.lerpVectors(start, target, e);
-      controls.target.lerpVectors(startTarget, look, e);
-      camera.lookAt(controls.target);
-      if (k < 1) requestAnimationFrame(tick);
-      else controls.update();
-    };
-    requestAnimationFrame(tick);
+  }
+
+  function settleCathCamera(dt: number) {
+    const k = 1 - Math.pow(1 - camLerp, Math.max(1, dt * 60));
+    camera.position.lerp(camGoal, k);
+    controls.target.lerp(lookGoal, k);
+    camera.lookAt(controls.target);
+    if (camera.position.distanceTo(camGoal) < 1e-3) {
+      camera.position.copy(camGoal);
+      controls.target.copy(lookGoal);
+      camLerp = 1;
+    }
   }
 
   function syncUIFromState() {
@@ -361,6 +369,9 @@ function main() {
   }
 
   applyCathCamera(false);
+  camera.position.copy(camGoal);
+  controls.target.copy(lookGoal);
+  camera.lookAt(controls.target);
   syncUIFromState();
 
   els["btn-lao"].addEventListener("click", () => {
@@ -556,7 +567,7 @@ function main() {
     }
     hoverTimer = window.setTimeout(() => {
       if (hoverMesh === hit) showTooltip(hit);
-    }, 1000);
+    }, 250);
   });
 
   renderer.domElement.addEventListener("pointerleave", () => clearHover());
@@ -578,10 +589,37 @@ function main() {
   });
 
   window.addEventListener("keydown", (e) => {
+    const tag = (e.target as HTMLElement | null)?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
     if (e.key === "r" || e.key === "R") {
       setMode("cath");
       setAngles(0, 0, true);
+      return;
     }
+
+    const step = e.shiftKey ? 5 : 2;
+    let primary = state.primary;
+    let secondary = state.secondary;
+    switch (e.key) {
+      case "ArrowLeft":
+        primary -= step;
+        break;
+      case "ArrowRight":
+        primary += step;
+        break;
+      case "ArrowUp":
+        secondary += step;
+        break;
+      case "ArrowDown":
+        secondary -= step;
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+    setMode("cath");
+    setAngles(primary, secondary, false);
   });
 
   window.addEventListener("resize", () => {
@@ -590,9 +628,17 @@ function main() {
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
-  function animate() {
+  let lastFrame = performance.now();
+  function animate(now = performance.now()) {
     requestAnimationFrame(animate);
-    controls.update();
+    const dt = Math.min(0.05, (now - lastFrame) / 1000);
+    lastFrame = now;
+
+    if (state.mode === "cath") {
+      settleCathCamera(dt);
+    } else {
+      controls.update();
+    }
     renderer.render(scene, camera);
   }
   animate();
