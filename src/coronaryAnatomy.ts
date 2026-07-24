@@ -542,9 +542,14 @@ function createHeartShell(): THREE.Group {
       side: THREE.DoubleSide,
     }),
   );
-  ovoid.position.set(0.05, -0.2, 0.02);
-  ovoid.rotation.z = THREE.MathUtils.degToRad(-8);
-  ovoid.rotation.x = THREE.MathUtils.degToRad(10);
+  // In-chest pose: long axis oblique — apex toward patient's left (+X),
+  // inferior (−Y), and slightly anterior (+Z). Ovoid long axis is ±Y;
+  // the apex is the inferior (−Y) pole.
+  ovoid.position.set(0.1, -0.26, 0.06);
+  ovoid.rotation.order = "ZYX";
+  ovoid.rotation.z = THREE.MathUtils.degToRad(40);
+  ovoid.rotation.x = THREE.MathUtils.degToRad(28);
+  ovoid.rotation.y = THREE.MathUtils.degToRad(12);
   group.add(ovoid);
 
   return group;

@@ -3,10 +3,12 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import {
   anglesFromCameraPosition,
+  applyModelOrientation,
   cathCameraPosition,
   formatAngulation,
   formatOblique,
   formatViewLabel,
+  ISOCENTER,
   VIEW_PRESETS,
   type CathAngles,
 } from "./cathAngles";
@@ -149,7 +151,7 @@ function buildUI(root: HTMLElement): {
 
       <p class="hint">
         Drag to rotate · Scroll to zoom · Arrows adjust angles
-        <kbd>R</kbd> reset AP
+        <kbd>R</kbd> reset AP · <kbd>P</kbd> hide panel
       </p>
 
       <div id="vessel-tooltip" class="vessel-tooltip" hidden>
@@ -266,7 +268,7 @@ function main() {
   controls.dampingFactor = 0.08;
   controls.minDistance = 2.4;
   controls.maxDistance = 10;
-  controls.target.set(0, -0.15, 0);
+  controls.target.copy(ISOCENTER);
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.45));
   const key = new THREE.DirectionalLight(0xfff0e8, 1.0);
@@ -304,6 +306,7 @@ function main() {
   scene.add(ring);
 
   const anatomy = createCoronaryAnatomy();
+  applyModelOrientation(anatomy);
   scene.add(anatomy);
   const heartShell = anatomy.getObjectByName("heartShell")!;
   const vessels = anatomy.getObjectByName("vessels");
@@ -315,14 +318,14 @@ function main() {
   }
   applyVesselVisibility();
 
-  const lookGoal = new THREE.Vector3(0, -0.15, 0);
+  const lookGoal = ISOCENTER.clone();
   const camGoal = cathCameraPosition(state, CAMERA_DISTANCE);
   /** 1 = snap, lower = smoother follow while dragging sliders / holding keys */
   let camLerp = 1;
 
   function applyCathCamera(animate = false) {
     camGoal.copy(cathCameraPosition(state, CAMERA_DISTANCE));
-    lookGoal.set(0, -0.15, 0);
+    lookGoal.copy(ISOCENTER);
     camLerp = animate ? 0.12 : 0.28;
     if (!animate && camera.position.distanceTo(camGoal) > 2.5) {
       camLerp = 1;
@@ -492,8 +495,11 @@ function main() {
   });
 
   const panelShell = els["panel-shell"];
-  els["btn-collapse"].addEventListener("click", () => panelShell.classList.add("collapsed"));
-  els["btn-expand"].addEventListener("click", () => panelShell.classList.remove("collapsed"));
+  function setPanelCollapsed(collapsed: boolean) {
+    panelShell.classList.toggle("collapsed", collapsed);
+  }
+  els["btn-collapse"].addEventListener("click", () => setPanelCollapsed(true));
+  els["btn-expand"].addEventListener("click", () => setPanelCollapsed(false));
 
   const tooltip = els["vessel-tooltip"];
   const tipName = tooltip.querySelector(".vessel-tooltip-name") as HTMLElement;
@@ -609,6 +615,12 @@ function main() {
     if (e.key === "r" || e.key === "R") {
       setMode("cath");
       setAngles(0, 0, true);
+      return;
+    }
+
+    if (e.key === "p" || e.key === "P") {
+      e.preventDefault();
+      setPanelCollapsed(true);
       return;
     }
 
