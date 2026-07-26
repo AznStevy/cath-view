@@ -332,10 +332,13 @@ export function createContrastSim(
   /**
    * Dye tube matching vessel topology, pinched to residual lumen through lesions
    * so contrast fills the stenosis channel — not the full vessel outline.
+   * @param cumEffAlong cumulative effective distance at each tube ring (from vessel origin).
+   *   When omitted, uses physical arc length (no stenosis stretch).
    */
   function buildDyeGeometry(
     v: ContrastVessel,
     lesions: LesionFlow[],
+    cumEffAlong?: number[],
   ): THREE.BufferGeometry {
     const tubular = v.tubularSegments;
     const radial = v.radialSegments;
@@ -343,9 +346,17 @@ export function createContrastSim(
     const positions: number[] = [];
     const normals: number[] = [];
     const uvs: number[] = [];
+    const dyeCumEff: number[] = [];
     const indices: number[] = [];
     const normal = new THREE.Vector3();
     const vertex = new THREE.Vector3();
+
+    const cumAt: number[] = new Array(tubular + 1);
+    if (cumEffAlong && cumEffAlong.length === tubular + 1) {
+      for (let i = 0; i <= tubular; i++) cumAt[i] = cumEffAlong[i];
+    } else {
+      for (let i = 0; i <= tubular; i++) cumAt[i] = (i / tubular) * v.length;
+    }
 
     for (let i = 0; i <= tubular; i++) {
       const t = i / tubular;
@@ -353,6 +364,7 @@ export function createContrastSim(
       const N = frames.normals[i];
       const B = frames.binormals[i];
       const rBase = dyeBaseRadius(v, t) * 0.92;
+      const cum = cumAt[i];
 
       for (let j = 0; j <= radial; j++) {
         const vv = j / radial;
@@ -369,6 +381,7 @@ export function createContrastSim(
         positions.push(vertex.x, vertex.y, vertex.z);
         normals.push(normal.x, normal.y, normal.z);
         uvs.push(t, vv);
+        dyeCumEff.push(cum);
       }
     }
 
@@ -387,6 +400,7 @@ export function createContrastSim(
     geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
     geo.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
     geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+    geo.setAttribute("dyeCumEff", new THREE.Float32BufferAttribute(dyeCumEff, 1));
     return geo;
   }
 
@@ -417,17 +431,23 @@ export function createContrastSim(
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
-          `#include <common>\nvarying float vDyeAlong;`,
+          `#include <common>
+attribute float dyeCumEff;
+varying float vDyeAlong;
+varying float vCumEff;`,
         )
         .replace(
           "#include <uv_vertex>",
-          `#include <uv_vertex>\nvDyeAlong = uv.x;`,
+          `#include <uv_vertex>
+vDyeAlong = uv.x;
+vCumEff = dyeCumEff;`,
         );
       shader.fragmentShader = shader.fragmentShader
         .replace(
           "#include <common>",
           `#include <common>
 varying float vDyeAlong;
+varying float vCumEff;
 uniform float uBaseAmt;
 uniform float uLesionCount;
 uniform float uLesionT0[${MAX_DYE_LESIONS}];
@@ -452,18 +472,19 @@ for (int i = 0; i < ${MAX_DYE_LESIONS}; i++) {
   float w = smoothstep(t0, blendEnd, vDyeAlong);
   dyeMul *= mix(1.0, uLesionFac[i], w);
 }
-// Age from when this parcel arrived: fade starts at the bolus origin and
-// moves distal — proximal clears first over ~uDiffuse seconds.
-float alongEff = uEffStart + vDyeAlong * uEffLen;
-float arrive = alongEff / max(uFlow, 0.001);
-float age = max(0.0, uClock - arrive);
-float ageFade = clamp(1.0 - age / max(uDiffuse, 0.001), 0.0, 1.0);
-dyeMul *= ageFade;
+// Local age from true arrival (cumulative travel).
+float arrive = (uEffStart + vCumEff) / max(uFlow, 0.001);
+float localAge = max(0.0, uClock - arrive);
+float localFade = clamp(1.0 - localAge / max(uDiffuse, 0.001), 0.0, 1.0);
+// Whole bolus also clears on the inject clock — late distal dye must not stay
+// bright after the rest of the branch has already diffused.
+float bolusFade = clamp(1.0 - uClock / max(uDiffuse, 0.001), 0.0, 1.0);
+dyeMul *= min(localFade, bolusFade);
 gl_FragColor.a *= dyeMul;
 #include <tonemapping_fragment>`,
         );
     };
-    mat.customProgramCacheKey = () => "dye-lesion-age-fade-v1";
+    mat.customProgramCacheKey = () => "dye-lesion-age-fade-v3";
   }
 
   /** How much contrast remains distal to a stenosis (0–1). */
@@ -556,7 +577,8 @@ gl_FragColor.a *= dyeMul;
   function rebuildDyeGeometries() {
     for (const o of overlays) {
       const lesions = flowsByVessel.get(o.vessel.id) ?? [];
-      const next = buildDyeGeometry(o.vessel, lesions);
+      const cum = cumulativeEffAlong(o.vessel);
+      const next = buildDyeGeometry(o.vessel, lesions, cum);
       o.mesh.geometry.dispose();
       o.mesh.geometry = next;
       o.geo = next;
@@ -680,17 +702,30 @@ gl_FragColor.a *= dyeMul;
   }
 
   /**
+   * Cumulative effective distance from vessel origin → each tube ring.
+   * Used so age-fade arrival matches real front timing (not UV·mean stretch).
+   */
+  function cumulativeEffAlong(v: ContrastVessel): number[] {
+    const n = v.tubularSegments;
+    const out = new Array<number>(n + 1);
+    out[0] = 0;
+    let cum = 0;
+    const seg = v.length / n;
+    for (let i = 1; i <= n; i++) {
+      const mid = (i - 0.5) / n;
+      cum += seg * travelMul(v, mid);
+      out[i] = cum;
+    }
+    return out;
+  }
+
+  /**
    * Effective path length of a vessel (physical length stretched by stenoses
    * and sustained distal flow limitation).
    */
   function effectiveVesselLength(v: ContrastVessel): number {
-    let costly = 0;
-    const steps = 32;
-    for (let i = 0; i < steps; i++) {
-      const t = (i + 0.5) / steps;
-      costly += (v.length / steps) * travelMul(v, t);
-    }
-    return costly;
+    const cum = cumulativeEffAlong(v);
+    return cum[cum.length - 1] ?? v.length;
   }
 
   /** Max dye front t along this vessel (CTO + sealed branch takeoffs). */
