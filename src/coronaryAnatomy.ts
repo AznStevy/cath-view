@@ -43,6 +43,34 @@ export const VESSEL_GROUPS: {
   { id: "rpl", label: "RCA PL", color: "#d87858", defaultOn: true },
 ];
 
+/** Territory categories for bulk show/hide in the vessel panel */
+export const VESSEL_CATEGORIES: {
+  id: string;
+  label: string;
+  color: string;
+  groups: VesselGroup[];
+}[] = [
+  { id: "cat-lm", label: "Left main", color: "#d4c05a", groups: ["lm"] },
+  {
+    id: "cat-lad",
+    label: "LAD system",
+    color: "#4ec8a0",
+    groups: ["lad", "septal", "diag"],
+  },
+  {
+    id: "cat-lcx",
+    label: "LCx system",
+    color: "#6a9fe8",
+    groups: ["lcx", "om", "lpl"],
+  },
+  {
+    id: "cat-rca",
+    label: "RCA system",
+    color: "#e07050",
+    groups: ["rca", "sn", "conus", "rv", "am", "pda", "rpl"],
+  },
+];
+
 const GROUP_COLORS: Record<VesselGroup, number> = {
   lm: 0xd4c05a,
   lad: 0x4ec8a0,

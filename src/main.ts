@@ -15,6 +15,7 @@ import {
 import {
   createCoronaryAnatomy,
   setVesselGroupVisibility,
+  VESSEL_CATEGORIES,
   VESSEL_GROUPS,
   type VesselGroup,
 } from "./coronaryAnatomy";
@@ -43,14 +44,38 @@ function buildUI(root: HTMLElement): {
   canvasHost: HTMLElement;
   els: Record<string, HTMLElement>;
 } {
-  const vesselToggles = VESSEL_GROUPS.map(
-    (g) => `
+  const vesselToggles = VESSEL_CATEGORIES.map((cat) => {
+    const showChildren = cat.groups.length > 1;
+    const items = showChildren
+      ? cat.groups
+          .map((id) => {
+            const g = VESSEL_GROUPS.find((x) => x.id === id)!;
+            return `
       <label class="vessel-toggle">
         <input type="checkbox" data-vessel="${g.id}" ${g.defaultOn ? "checked" : ""} />
         <span class="swatch" style="background:${g.color}"></span>
         <span>${g.label}</span>
-      </label>`,
-  ).join("");
+      </label>`;
+          })
+          .join("")
+      : `
+      <input type="checkbox" data-vessel="${cat.groups[0]}" ${
+          VESSEL_GROUPS.find((x) => x.id === cat.groups[0])?.defaultOn ? "checked" : ""
+        } hidden aria-hidden="true" />`;
+    return `
+      <div class="vessel-category" data-category="${cat.id}">
+        <label class="vessel-category-toggle">
+          <input type="checkbox" data-category="${cat.id}" checked />
+          <span class="swatch" style="background:${cat.color}"></span>
+          <span>${cat.label}</span>
+        </label>
+        ${
+          showChildren
+            ? `<div class="vessel-category-items">${items}</div>`
+            : items
+        }
+      </div>`;
+  }).join("");
 
   root.innerHTML = `
     <div id="viewport"></div>
@@ -79,11 +104,6 @@ function buildUI(root: HTMLElement): {
               <div class="label">Angulation</div>
               <div class="value" id="angulation-readout">0°</div>
             </div>
-          </div>
-
-          <div class="mode-toggle">
-            <button type="button" id="mode-cath" class="active">Angles</button>
-            <button type="button" id="mode-orbit">Orbit</button>
           </div>
 
           <div class="control-group">
@@ -122,7 +142,6 @@ function buildUI(root: HTMLElement): {
           </div>
 
           <div class="action-row">
-            <button type="button" id="btn-ap">AP</button>
             <button type="button" id="btn-heart">Heart</button>
           </div>
 
@@ -209,8 +228,6 @@ function buildUI(root: HTMLElement): {
   const ids = [
     "oblique-readout",
     "angulation-readout",
-    "mode-cath",
-    "mode-orbit",
     "btn-rao",
     "btn-lao",
     "oblique-label",
@@ -222,7 +239,6 @@ function buildUI(root: HTMLElement): {
     "angulation-slider",
     "angulation-input",
     "preset-grid",
-    "btn-ap",
     "btn-heart",
     "btn-simulate",
     "sim-panel-hint",
@@ -411,8 +427,6 @@ function main() {
     els["btn-rao"].classList.toggle("active", !isLao);
     els["btn-cranial"].classList.toggle("active", isCranial);
     els["btn-caudal"].classList.toggle("active", !isCranial);
-    els["mode-cath"].classList.toggle("active", state.mode === "cath");
-    els["mode-orbit"].classList.toggle("active", state.mode === "orbit");
     state.syncing = false;
   }
 
@@ -425,7 +439,6 @@ function main() {
 
   function setMode(mode: ViewMode) {
     state.mode = mode;
-    syncUIFromState();
     if (mode === "cath") applyCathCamera(true);
   }
 
@@ -488,14 +501,6 @@ function main() {
   els["angulation-input"].addEventListener("change", () => {
     if (state.syncing) return;
     setAngulationMag(Number((els["angulation-input"] as HTMLInputElement).value) || 0);
-  });
-
-  els["mode-cath"].addEventListener("click", () => setMode("cath"));
-  els["mode-orbit"].addEventListener("click", () => setMode("orbit"));
-
-  els["btn-ap"].addEventListener("click", () => {
-    setMode("cath");
-    setAngles(0, 0, true);
   });
 
   let heartVisible = true;
@@ -608,14 +613,44 @@ function main() {
       const id = input.dataset.vessel as VesselGroup;
       input.checked = vesselVisibility[id];
     });
+    syncCategoryCheckboxes();
+  }
+
+  function syncCategoryCheckboxes() {
+    for (const cat of VESSEL_CATEGORIES) {
+      const input = els["vessel-toggles"].querySelector<HTMLInputElement>(
+        `input[data-category="${cat.id}"]`,
+      );
+      if (!input) continue;
+      const states = cat.groups.map((id) => vesselVisibility[id]);
+      const allOn = states.every(Boolean);
+      const allOff = states.every((s) => !s);
+      input.checked = allOn;
+      input.indeterminate = !allOn && !allOff;
+    }
+  }
+
+  function setCategoryVisibility(categoryId: string, on: boolean) {
+    const cat = VESSEL_CATEGORIES.find((c) => c.id === categoryId);
+    if (!cat) return;
+    for (const id of cat.groups) {
+      vesselVisibility[id] = on;
+      setVesselGroupVisibility(anatomy, id, on);
+    }
+    syncVesselCheckboxes();
   }
 
   els["vessel-toggles"].addEventListener("change", (e) => {
     const input = e.target as HTMLInputElement;
+    if (input.dataset.category) {
+      setCategoryVisibility(input.dataset.category, input.checked);
+      return;
+    }
     if (!input.dataset.vessel) return;
     const id = input.dataset.vessel as VesselGroup;
     vesselVisibility[id] = input.checked;
     setVesselGroupVisibility(anatomy, id, input.checked);
+    syncCategoryCheckboxes();
   });
 
   els["btn-vessels-all"].addEventListener("click", () => {
