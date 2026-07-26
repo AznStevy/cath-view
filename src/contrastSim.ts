@@ -5,10 +5,10 @@ import * as THREE from "three";
  * ~3.1 units/s → longest root→tip path fills in ~1.3–1.5 s,
  * closer to selective-injection opacification / epicardial flow.
  *
- * Bolus lifetime ≈ DIFFUSION_SEC: each parcel fades over ~2 s from the moment
- * it arrives, so clearance marches from the injection point distal — proximal
- * thins first while the front is still advancing. A Q-limited crawl that takes
- * longer than that never meaningfully opacifies far territory.
+ * Bolus lifetime ≈ DIFFUSION_SEC: each parcel fades over ~2 s from arrival, so
+ * clearance marches from the injection point distal. Injection stops once the
+ * proximal dye has dissipated (~2 s) — the front need not reach the vessel tips;
+ * remaining dye clears by diffusion rather than a hard mid-column cutoff.
  */
 const FLOW_UNITS_PER_SEC = 3.1;
 const DIFFUSION_SEC = 2.0;
@@ -467,10 +467,9 @@ gl_FragColor.a *= dyeMul;
   }
 
   /** How much contrast remains distal to a stenosis (0–1). */
-  function lesionTransmit(residualArea: number): number {
-    if (residualArea < 0.02) return 0.12;
-    // Keep in sync with flowConductance so opacification matches sluggish Q
-    return Math.max(0.12, Math.pow(residualArea, 0.75));
+  function lesionTransmit(f: LesionFlow): number {
+    // Match opacification to length- and area-limited conductance
+    return Math.max(0.12, flowConductance(f));
   }
 
   const overlays: DyeOverlay[] = vessels.map((v) => {
@@ -622,12 +621,18 @@ gl_FragColor.a *= dyeMul;
 
   /**
    * Volumetric flow conductance through a stenosis (0–1).
-   * Distal territory is Q-limited by this factor after the dye enters the lesion.
+   * Distal territory is Q-limited by this after dye enters the lesion.
+   * Poiseuille: Q ∝ A²/L — longer or tighter ⇒ slower everything downstream.
    */
-  function flowConductance(residualArea: number): number {
-    if (residualArea < 0.02) return 0.02;
-    // Milder than pure A² so moderate lesions still show distal motion
-    return Math.max(0.1, Math.pow(residualArea, 0.75));
+  function flowConductance(f: LesionFlow): number {
+    if (f.residualArea < 0.02) return 0.02;
+    // Full stenotic span (t1−t0 = 2·lengthT)
+    const lenT = Math.max(0.02, f.t1 - f.t0);
+    const REF_LEN_T = 0.056; // default focal span
+    const area = Math.max(0.05, f.residualArea);
+    // Soften area exponent slightly so moderate stenoses still move
+    const g = (Math.pow(area, 1.25) * REF_LEN_T) / lenT;
+    return THREE.MathUtils.clamp(g, 0.05, 1);
   }
 
   /**
@@ -641,7 +646,7 @@ gl_FragColor.a *= dyeMul;
     const own = flowsByVessel.get(v.id);
     if (own) {
       for (const f of own) {
-        if (t >= f.t0 - 1e-4) q *= flowConductance(f.residualArea);
+        if (t >= f.t0 - 1e-4) q *= flowConductance(f);
       }
     }
 
@@ -655,7 +660,7 @@ gl_FragColor.a *= dyeMul;
         for (const f of list) {
           // Branch only sees the bottleneck if its takeoff is at/after the lesion
           if (cur.takeoffT >= f.t0 - 1e-4) {
-            q *= flowConductance(f.residualArea);
+            q *= flowConductance(f);
           }
         }
       }
@@ -664,14 +669,14 @@ gl_FragColor.a *= dyeMul;
       cur = parent;
     }
 
-    return THREE.MathUtils.clamp(q, 0.08, 1);
+    return THREE.MathUtils.clamp(q, 0.05, 1);
   }
 
   /** Travel-cost multiplier: slow through the throat, stay sluggish distal. */
   function travelMul(v: ContrastVessel, t: number): number {
     const res = resistanceAt(v.id, t);
     const flow = pathFlowFactor(v, t);
-    return Math.min(50, Math.max(res, 1 / Math.max(0.08, flow)));
+    return Math.min(80, Math.max(res, 1 / Math.max(0.05, flow)));
   }
 
   /**
@@ -735,22 +740,21 @@ gl_FragColor.a *= dyeMul;
   /** Inherited thinning from parent lesions that sit proximal to this takeoff. */
   function inheritedAmountFactor(v: ContrastVessel): number {
     // Match opacification to the same Q-limit that slows distal fill
-    return THREE.MathUtils.clamp(pathFlowFactor(v, 0), 0.12, 1);
-  }
-
-  /** Max effective distance the bolus can travel before it has diffused away. */
-  function bolusTravelDist(): number {
-    return FLOW_UNITS_PER_SEC * DIFFUSION_SEC;
-  }
-
-  function fillCapDist(): number {
-    if (maxEnd <= 0) return 0;
-    return Math.min(maxEnd, bolusTravelDist());
+    return THREE.MathUtils.clamp(pathFlowFactor(v, 0), 0.05, 1);
   }
 
   /** Effective distance where dye age ≥ DIFFUSION_SEC (fully cleared from proximal). */
   function agedOutDist(): number {
     return Math.max(0, (cycleClock - DIFFUSION_SEC) * FLOW_UNITS_PER_SEC);
+  }
+
+  /**
+   * How far the leading edge gets while proximal dye is still present.
+   * Stops when the ostium has aged out — not when every tip is filled.
+   */
+  function fillPeakDist(): number {
+    if (maxEnd <= 0) return 0;
+    return Math.min(maxEnd, FLOW_UNITS_PER_SEC * DIFFUSION_SEC);
   }
 
   function syncOverlayLesionUniforms(o: DyeOverlay) {
@@ -769,7 +773,7 @@ gl_FragColor.a *= dyeMul;
       if (i < n) {
         o.uLesionT0.value[i] = sorted[i].t0;
         o.uLesionT1.value[i] = sorted[i].t1;
-        o.uLesionFac.value[i] = lesionTransmit(sorted[i].residualArea);
+        o.uLesionFac.value[i] = lesionTransmit(sorted[i]);
       } else {
         o.uLesionT0.value[i] = 1;
         o.uLesionT1.value[i] = 1;
@@ -924,6 +928,13 @@ gl_FragColor.a *= dyeMul;
       if (!(obj instanceof THREE.Mesh)) return;
       if (obj.userData.isDyeOverlay) return;
 
+      // Plaque overlays read like "Show lesions" on a dimmed fluoro field —
+      // hide them while injecting; residual lumen is already in the dye tube.
+      if (obj.userData.isLesionMesh) {
+        obj.visible = !on;
+        return;
+      }
+
       // Tube end-disks at ostia / branch takeoffs read as bright circles in
       // fluoro inject — hide them while dimmed (junction beads seal the joins).
       const isTubeCap =
@@ -1008,9 +1019,10 @@ gl_FragColor.a *= dyeMul;
     }
   }
 
-  /** Fill (and wash) duration in seconds at 1× speed — capped by bolus life. */
+  /** Fill duration: until proximal bolus dissipates, or the tree is fully reached. */
   function fillDurationSec(): number {
-    return fillCapDist() / FLOW_UNITS_PER_SEC;
+    if (maxEnd <= 0) return 0;
+    return Math.min(maxEnd / FLOW_UNITS_PER_SEC, DIFFUSION_SEC);
   }
 
   function cycleDurationSec(): number {
@@ -1023,15 +1035,19 @@ gl_FragColor.a *= dyeMul;
     const fill = fillDurationSec();
     const total = cycleDurationSec();
     if (total <= 0) return 0;
+
+    // Purely time-based so the seek thumb never jumps when washDist
+    // (age clear) has already advanced during hold / through a stenosis.
     let t = 0;
     if (phase === "fill") {
-      t = injectDist / FLOW_UNITS_PER_SEC;
+      t = Math.min(fill, cycleClock);
     } else if (phase === "hold") {
-      t = fill + phaseTimer;
+      t = fill + Math.min(HOLD_SEC, phaseTimer);
     } else if (phase === "wash") {
-      t = fill + HOLD_SEC + washDist / FLOW_UNITS_PER_SEC;
+      const washElapsed = Math.max(0, cycleClock - fill - HOLD_SEC);
+      t = fill + HOLD_SEC + Math.min(fill, washElapsed);
     } else {
-      t = fill + HOLD_SEC + fill + phaseTimer;
+      t = fill + HOLD_SEC + fill + Math.min(CLEAR_PAUSE_SEC, phaseTimer);
     }
     return THREE.MathUtils.clamp(t / total, 0, 1);
   }
@@ -1042,25 +1058,29 @@ gl_FragColor.a *= dyeMul;
     const total = cycleDurationSec();
     if (total <= 0) return;
     const t = THREE.MathUtils.clamp(progress01, 0, 1) * total;
-    const cap = fillCapDist();
-    cycleClock = t;
+    const peak = fillPeakDist();
 
     if (t < fill) {
       phase = "fill";
+      cycleClock = t;
       injectDist = t * FLOW_UNITS_PER_SEC;
       phaseTimer = 0;
     } else if (t < fill + HOLD_SEC) {
       phase = "hold";
-      injectDist = cap;
+      injectDist = peak;
       phaseTimer = t - fill;
+      // Keep clock aligned with displayed timeline (fill + hold elapsed)
+      cycleClock = fill + phaseTimer;
     } else if (t < fill + HOLD_SEC + fill) {
       phase = "wash";
-      injectDist = cap;
+      injectDist = peak;
       phaseTimer = 0;
+      cycleClock = t;
     } else {
       phase = "pause";
-      injectDist = cap;
+      injectDist = peak;
       phaseTimer = t - fill - HOLD_SEC - fill;
+      cycleClock = fill + HOLD_SEC + fill + phaseTimer;
     }
 
     const aged = agedOutDist();
@@ -1188,7 +1208,11 @@ gl_FragColor.a *= dyeMul;
       lesionFlows = flows;
       rebuildFlowIndex();
       rebuildDyeGeometries();
-      if (active && side) recomputeMaxEnd();
+      if (active && side) {
+        recomputeMaxEnd();
+        // New lesion meshes are created bright — re-apply inject hide
+        setDimmed(true);
+      }
     },
     pickSide(ray, hitMesh, _hitPoint) {
       anatomy.updateWorldMatrix(true, false);
@@ -1267,17 +1291,17 @@ gl_FragColor.a *= dyeMul;
       if (side && speed > 0 && maxEnd > 0) {
         cycleClock += dt * speed;
         const advance = FLOW_UNITS_PER_SEC * speed * dt;
-        const cap = fillCapDist();
         const aged = agedOutDist();
         if (phase === "fill") {
           injectDist += advance;
-          // Bolus only travels ~DIFFUSION_SEC — beyond that it has diffused away
-          if (injectDist >= cap) {
-            injectDist = cap;
+          washDist = Math.min(injectDist, aged);
+          // Stop once proximal dye has dissipated (or the tree is fully reached)
+          const proximalGone = cycleClock >= DIFFUSION_SEC;
+          if (injectDist >= maxEnd || proximalGone) {
+            injectDist = Math.min(injectDist, fillPeakDist());
             phase = "hold";
             phaseTimer = 0;
           }
-          washDist = Math.min(injectDist, aged);
         } else if (phase === "hold") {
           phaseTimer += dt * speed;
           washDist = Math.min(injectDist, aged);
@@ -1289,10 +1313,15 @@ gl_FragColor.a *= dyeMul;
             injectDist,
             Math.max(aged, washDist + advance),
           );
-          if (washDist >= injectDist) {
+          const fill = fillDurationSec();
+          const washElapsed = Math.max(0, cycleClock - fill - HOLD_SEC);
+          // Wait out the wash timeline even if age already cleared the column,
+          // so the seek thumb doesn't jump when entering pause.
+          if (washElapsed >= fill) {
             washDist = injectDist;
             phase = "pause";
             phaseTimer = 0;
+            cycleClock = fill + HOLD_SEC + fill;
           }
         } else {
           phaseTimer += dt * speed;
