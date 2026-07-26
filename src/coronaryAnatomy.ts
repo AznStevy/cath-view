@@ -1,4 +1,8 @@
 import * as THREE from "three";
+import {
+  createDyeUniforms,
+  type ContrastVessel,
+} from "./contrastSim";
 
 /** Toggle groups in the vessel panel */
 export type VesselGroup =
@@ -59,6 +63,10 @@ const GROUP_COLORS: Record<VesselGroup, number> = {
 type Pt = [number, number, number];
 
 type PathSpec = {
+  /** Unique id for contrast-flow tree timing */
+  id: string;
+  /** Parent vessel id; omit for ostial roots (LM / RCA) */
+  parentId?: string;
   group: VesselGroup;
   name: string;
   detail: string;
@@ -204,6 +212,7 @@ const CRUX: Pt = [0.06, -0.32, -0.98];
 
 const PATHS: PathSpec[] = [
   {
+    id: "lm",
     group: "lm",
     name: "Left main (LM)",
     detail: "Left coronary ostium → bifurcation",
@@ -212,6 +221,8 @@ const PATHS: PathSpec[] = [
     points: [LEFT_OST, [0.28, 0.55, 0.26], [0.48, 0.46, 0.36], LM_BIFUR],
   },
   {
+    id: "lad",
+    parentId: "lm",
     group: "lad",
     name: "LAD",
     detail: "Left anterior descending · AIV groove → apex",
@@ -236,6 +247,8 @@ const PATHS: PathSpec[] = [
     ],
   },
   {
+    id: "s1",
+    parentId: "lad",
     group: "septal",
     name: "Septal S1",
     detail: "First septal perforator",
@@ -244,6 +257,8 @@ const PATHS: PathSpec[] = [
     points: [LAD_S1, [0.34, 0.1, 0.42], [0.2, -0.02, 0.2], [0.12, -0.14, 0.04]],
   },
   {
+    id: "s2",
+    parentId: "lad",
     group: "septal",
     name: "Septal S2",
     detail: "Second septal perforator",
@@ -252,6 +267,8 @@ const PATHS: PathSpec[] = [
     points: [LAD_S2, [0.28, -0.16, 0.55], [0.16, -0.3, 0.28], [0.08, -0.4, 0.08]],
   },
   {
+    id: "s3",
+    parentId: "lad",
     group: "septal",
     name: "Septal S3",
     detail: "Third septal perforator",
@@ -260,6 +277,8 @@ const PATHS: PathSpec[] = [
     points: [LAD_S3, [0.16, -0.42, 0.65], [0.08, -0.55, 0.35], [0.02, -0.62, 0.12]],
   },
   {
+    id: "s4",
+    parentId: "lad",
     group: "septal",
     name: "Septal S4",
     detail: "Distal septal perforator",
@@ -268,6 +287,8 @@ const PATHS: PathSpec[] = [
     points: [LAD_S4, [0.08, -0.7, 0.62], [0.02, -0.82, 0.28]],
   },
   {
+    id: "d1",
+    parentId: "lad",
     group: "diag",
     name: "Diagonal D1",
     detail: "First diagonal · anterolateral LV free wall",
@@ -285,6 +306,8 @@ const PATHS: PathSpec[] = [
     ]),
   },
   {
+    id: "d2",
+    parentId: "lad",
     group: "diag",
     name: "Diagonal D2",
     detail: "Second diagonal · mid anterolateral wall",
@@ -301,6 +324,8 @@ const PATHS: PathSpec[] = [
     ]),
   },
   {
+    id: "d3",
+    parentId: "lad",
     group: "diag",
     name: "Diagonal D3",
     detail: "Third diagonal · distal anterolateral wall",
@@ -315,6 +340,8 @@ const PATHS: PathSpec[] = [
     ]),
   },
   {
+    id: "lcx",
+    parentId: "lm",
     group: "lcx",
     name: "LCx",
     detail: "Left circumflex · wraps left AV groove on epicardium → terminal PL",
@@ -337,6 +364,8 @@ const PATHS: PathSpec[] = [
     ],
   },
   {
+    id: "om1",
+    parentId: "lcx",
     group: "om",
     name: "OM1",
     detail: "First obtuse marginal · high lateral free wall",
@@ -354,6 +383,8 @@ const PATHS: PathSpec[] = [
     ]),
   },
   {
+    id: "om2",
+    parentId: "lcx",
     group: "om",
     name: "OM2",
     detail: "Second obtuse marginal · mid-lateral free wall",
@@ -371,6 +402,8 @@ const PATHS: PathSpec[] = [
     ]),
   },
   {
+    id: "om3",
+    parentId: "lcx",
     group: "om",
     name: "OM3",
     detail: "Third obtuse marginal · low lateral free wall",
@@ -386,6 +419,8 @@ const PATHS: PathSpec[] = [
     ]),
   },
   {
+    id: "lpl",
+    parentId: "lcx",
     group: "lpl",
     name: "LCx PL",
     detail: "Terminal posterolateral continuation of distal LCx",
@@ -400,6 +435,7 @@ const PATHS: PathSpec[] = [
     ]),
   },
   {
+    id: "rca",
     group: "rca",
     name: "RCA",
     detail: "Right coronary artery · right AV groove → crux",
@@ -420,6 +456,8 @@ const PATHS: PathSpec[] = [
     ],
   },
   {
+    id: "sn",
+    parentId: "rca",
     group: "sn",
     name: "SN branch",
     detail: "Sinoatrial node artery · proximal RCA → SVC–RA (on epicardium)",
@@ -435,6 +473,8 @@ const PATHS: PathSpec[] = [
     ]),
   },
   {
+    id: "conus",
+    parentId: "rca",
     group: "conus",
     name: "Conus",
     detail: "Conus branch · RVOT",
@@ -443,6 +483,8 @@ const PATHS: PathSpec[] = [
     points: [RCA_CONUS, [-0.3, 0.55, 0.45], [-0.22, 0.48, 0.65], [-0.08, 0.38, 0.72]],
   },
   {
+    id: "rv",
+    parentId: "rca",
     group: "rv",
     name: "RV branch",
     detail: "Right ventricular branch · mid RCA → RV free wall",
@@ -459,6 +501,8 @@ const PATHS: PathSpec[] = [
     ]),
   },
   {
+    id: "am1",
+    parentId: "rca",
     group: "am",
     name: "AM1",
     detail: "First acute marginal · proximal acute margin",
@@ -475,6 +519,8 @@ const PATHS: PathSpec[] = [
     ]),
   },
   {
+    id: "am2",
+    parentId: "rca",
     group: "am",
     name: "AM2",
     detail: "Second acute marginal · distal acute margin",
@@ -490,6 +536,8 @@ const PATHS: PathSpec[] = [
     ]),
   },
   {
+    id: "pda",
+    parentId: "rca",
     group: "pda",
     name: "PDA",
     detail: "Posterior descending · down the PIV groove (LAO: straight inferior)",
@@ -506,6 +554,8 @@ const PATHS: PathSpec[] = [
     ]),
   },
   {
+    id: "rpl",
+    parentId: "rca",
     group: "rpl",
     name: "PLV / RPL",
     detail: "Posterolateral continuation of RCA past crux · AV groove → inferior LV",
@@ -738,12 +788,14 @@ function createTaperedTubeGeometry(
 
 function createVesselMesh(spec: PathSpec): THREE.Mesh {
   const curve = makeCurve(spec.points);
+  const tubularSegments = spec.tubularSegments ?? 48;
+  const radialSegments = 10;
   const geo = createTaperedTubeGeometry(
     curve,
-    spec.tubularSegments ?? 48,
+    tubularSegments,
     spec.radiusStart,
     spec.radiusEnd,
-    10,
+    radialSegments,
     spec.taperHold ?? 0,
     spec.taperPower,
   );
@@ -754,22 +806,25 @@ function createVesselMesh(spec: PathSpec): THREE.Mesh {
     emissive: GROUP_COLORS[spec.group],
     emissiveIntensity: 0.08,
   });
+  const dye = createDyeUniforms(0);
+
   const mesh = new THREE.Mesh(geo, mat);
   mesh.userData.vesselGroup = spec.group;
   mesh.userData.vesselName = spec.name;
   mesh.userData.vesselDetail = spec.detail;
   mesh.userData.isVessel = true;
-  mesh.name = `vessel-${spec.group}`;
+  mesh.name = `vessel-${spec.id}`;
 
   // Disk caps close hollow tube ends (junction beads cover the rest)
   const start = curve.getPointAt(0);
   const end = curve.getPointAt(1);
   const tStart = curve.getTangentAt(0).normalize();
   const tEnd = curve.getTangentAt(1).normalize();
-  const capMat = mat.clone();
+
+  const startCapMat = mat.clone();
   const startCap = new THREE.Mesh(
     new THREE.CircleGeometry(spec.radiusStart * 1.02, 12),
-    capMat,
+    startCapMat,
   );
   startCap.position.copy(start);
   startCap.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), tStart.clone().negate());
@@ -777,15 +832,33 @@ function createVesselMesh(spec: PathSpec): THREE.Mesh {
   startCap.userData.isVessel = true;
   mesh.add(startCap);
 
+  const endCapMat = mat.clone();
   const endCap = new THREE.Mesh(
     new THREE.CircleGeometry(spec.radiusEnd * 1.02, 12),
-    capMat,
+    endCapMat,
   );
   endCap.position.copy(end);
   endCap.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), tEnd);
   endCap.userData.vesselGroup = spec.group;
   endCap.userData.isVessel = true;
   mesh.add(endCap);
+
+  const indexCount = geo.index?.count ?? 0;
+  const contrast: ContrastVessel = {
+    id: spec.id,
+    parentId: spec.parentId ?? null,
+    length: curve.getLength(),
+    curve,
+    takeoffT: 0,
+    startDelay: 0,
+    dye,
+    mesh,
+    materials: [mat, startCapMat, endCapMat],
+    indexCount,
+    tubularSegments,
+    radialSegments,
+  };
+  mesh.userData.contrast = contrast;
 
   return mesh;
 }

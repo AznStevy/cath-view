@@ -18,6 +18,7 @@ import {
   VESSEL_GROUPS,
   type VesselGroup,
 } from "./coronaryAnatomy";
+import { createContrastSim, type InjectionSide } from "./contrastSim";
 
 type ViewMode = "cath" | "orbit";
 
@@ -125,6 +126,14 @@ function buildUI(root: HTMLElement): {
             <button type="button" id="btn-heart">Heart</button>
           </div>
 
+          <div class="sim-panel">
+            <h3>Contrast</h3>
+            <button type="button" id="btn-simulate" class="btn-simulate">Simulate</button>
+            <p class="sim-panel-hint" id="sim-panel-hint">
+              Press Simulate, then click LAD, LCx, LM, or RCA on the model.
+            </p>
+          </div>
+
           <div class="legend">
             <h3>Vessels</h3>
             <div class="vessel-actions">
@@ -149,9 +158,34 @@ function buildUI(root: HTMLElement): {
         </div>
       </div>
 
+      <div class="sim-bar" id="sim-bar" hidden>
+        <div class="sim-bar-label">
+          <span id="sim-target-label">Click a vessel to inject</span>
+          <span id="sim-speed-readout">100%</span>
+        </div>
+        <input
+          id="sim-speed"
+          type="range"
+          min="0"
+          max="100"
+          value="100"
+          step="1"
+          aria-label="Contrast simulation speed"
+        />
+        <div class="sim-bar-meta">
+          <span>Pause</span>
+          <span id="sim-status">Waiting</span>
+          <span>100%</span>
+        </div>
+        <div class="sim-bar-actions">
+          <button type="button" id="sim-bar-change">Change vessel</button>
+          <button type="button" id="sim-bar-stop">Stop</button>
+        </div>
+      </div>
+
       <p class="hint">
         Drag to rotate · Scroll to zoom · Arrows adjust angles
-        <kbd>R</kbd> reset AP · <kbd>P</kbd> panel
+        <kbd>R</kbd> reset AP · <kbd>P</kbd> panel · <kbd>S</kbd> simulate
       </p>
 
       <div id="vessel-tooltip" class="vessel-tooltip" hidden>
@@ -190,6 +224,15 @@ function buildUI(root: HTMLElement): {
     "preset-grid",
     "btn-ap",
     "btn-heart",
+    "btn-simulate",
+    "sim-panel-hint",
+    "sim-bar",
+    "sim-speed",
+    "sim-speed-readout",
+    "sim-status",
+    "sim-target-label",
+    "sim-bar-change",
+    "sim-bar-stop",
     "btn-vessels-all",
     "btn-vessels-none",
     "vessel-toggles",
@@ -310,6 +353,7 @@ function main() {
   scene.add(anatomy);
   const heartShell = anatomy.getObjectByName("heartShell")!;
   const vessels = anatomy.getObjectByName("vessels");
+  const contrastSim = createContrastSim(anatomy, [ground, ring]);
 
   function applyVesselVisibility() {
     for (const g of VESSEL_GROUPS) {
@@ -460,6 +504,98 @@ function main() {
     heartShell.visible = heartVisible;
   });
 
+  const simBar = els["sim-bar"];
+  const simSpeed = els["sim-speed"] as HTMLInputElement;
+  const simReadout = els["sim-speed-readout"];
+  const simStatus = els["sim-status"];
+  const simTargetLabel = els["sim-target-label"];
+  const simPanelHint = els["sim-panel-hint"];
+  const btnSimulate = els["btn-simulate"];
+  const btnBarChange = els["sim-bar-change"] as HTMLButtonElement;
+  const btnBarStop = els["sim-bar-stop"] as HTMLButtonElement;
+  let hoverEmissive = 0.08;
+
+  function sideLabel(side: InjectionSide | null): string {
+    if (side === "left") return "Left coronary (LM)";
+    if (side === "lad") return "LAD";
+    if (side === "lcx") return "LCx";
+    if (side === "right") return "Right coronary";
+    if (side === "both") return "Both coronaries";
+    return "Click a vessel on the model";
+  }
+
+  function syncSimUI() {
+    const pct = Math.round(contrastSim.speed * 100);
+    const armed = contrastSim.active && !contrastSim.side;
+    const running = contrastSim.active && !!contrastSim.side;
+
+    simSpeed.value = String(pct);
+    simReadout.textContent = `${pct}%`;
+    simTargetLabel.textContent = sideLabel(contrastSim.side);
+
+    if (!contrastSim.active) {
+      simStatus.textContent = "Off";
+      simPanelHint.textContent =
+        "Press Simulate, then click LAD, LCx, LM, or RCA on the model.";
+      btnSimulate.textContent = "Simulate";
+      btnSimulate.classList.remove("active");
+    } else if (armed) {
+      simStatus.textContent = "Waiting";
+      simPanelHint.textContent =
+        "Click LAD, LCx, LM, or RCA to inject. Click between the ostia for both.";
+      btnSimulate.textContent = "Waiting…";
+      btnSimulate.classList.add("active");
+    } else if (pct === 0) {
+      simStatus.textContent = "Paused";
+      simPanelHint.textContent = "Paused. Use Change vessel or Stop on the screen bar.";
+      btnSimulate.textContent = "Running";
+      btnSimulate.classList.add("active");
+    } else {
+      simStatus.textContent = "Running";
+      simPanelHint.textContent = "Use Change vessel or Stop on the screen bar.";
+      btnSimulate.textContent = "Running";
+      btnSimulate.classList.add("active");
+    }
+
+    // Always show both actions on the screen bar while sim is active
+    btnBarChange.hidden = false;
+    btnBarChange.disabled = !running;
+    btnBarChange.textContent = "Change vessel";
+    btnBarStop.hidden = false;
+    simBar.hidden = !contrastSim.active;
+    hoverEmissive = running ? 0.05 : 0.08;
+  }
+
+  function stopSim() {
+    contrastSim.setActive(false);
+    syncSimUI();
+  }
+
+  function changeVessel() {
+    contrastSim.clearSelection();
+    syncSimUI();
+  }
+
+  btnSimulate.addEventListener("click", () => {
+    if (contrastSim.active) return; // Stop / Change live on the screen bar
+    contrastSim.setActive(true);
+    syncSimUI();
+  });
+  btnBarChange.addEventListener("click", changeVessel);
+  btnBarStop.addEventListener("click", stopSim);
+
+  simSpeed.addEventListener("input", () => {
+    contrastSim.setSpeed(Number(simSpeed.value) / 100);
+    syncSimUI();
+  });
+
+  syncSimUI();
+
+  const hintEl = document.querySelector(".hint") as HTMLElement | null;
+  window.setTimeout(() => {
+    hintEl?.classList.add("is-hidden");
+  }, 10000);
+
   els["preset-grid"].addEventListener("click", (e) => {
     const btn = (e.target as HTMLElement).closest("button");
     if (!btn || !btn.dataset.primary) return;
@@ -510,7 +646,8 @@ function main() {
   let hoverTimer: number | null = null;
   let pointerClient = { x: 0, y: 0 };
   let isDragging = false;
-  let hoverEmissive = 0.08;
+  let pointerDownPos = { x: 0, y: 0 };
+  let pointerGestureMoved = false;
 
   function clearHover() {
     if (hoverTimer !== null) {
@@ -543,24 +680,70 @@ function main() {
     tooltip.style.top = `${y}px`;
   }
 
-  function pickVessel(clientX: number, clientY: number): THREE.Mesh | null {
+  function collectVesselTargets(): THREE.Object3D[] {
+    const targets: THREE.Object3D[] = [];
+    vessels?.traverse((obj) => {
+      if (
+        obj instanceof THREE.Mesh &&
+        obj.visible &&
+        obj.userData.isVessel &&
+        !obj.userData.isDyeOverlay
+      ) {
+        targets.push(obj);
+      }
+    });
+    return targets;
+  }
+
+  function setRayFromClient(clientX: number, clientY: number) {
     const rect = renderer.domElement.getBoundingClientRect();
     pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
-    const targets: THREE.Object3D[] = [];
-    vessels?.traverse((obj) => {
-      if (obj instanceof THREE.Mesh && obj.visible && obj.userData.isVessel) {
-        targets.push(obj);
-      }
-    });
-    const hits = raycaster.intersectObjects(targets, false);
+  }
+
+  function pickVessel(clientX: number, clientY: number): THREE.Mesh | null {
+    setRayFromClient(clientX, clientY);
+    const hits = raycaster.intersectObjects(collectVesselTargets(), false);
     return hits.length ? (hits[0].object as THREE.Mesh) : null;
   }
 
+  function pickVesselHit(
+    clientX: number,
+    clientY: number,
+  ): { mesh: THREE.Mesh | null; point: THREE.Vector3 | null } {
+    setRayFromClient(clientX, clientY);
+    const hits = raycaster.intersectObjects(collectVesselTargets(), false);
+    if (!hits.length) return { mesh: null, point: null };
+    return { mesh: hits[0].object as THREE.Mesh, point: hits[0].point.clone() };
+  }
+
+  function tryEngageFromClick(clientX: number, clientY: number) {
+    if (!contrastSim.active) return false;
+    const { mesh, point } = pickVesselHit(clientX, clientY);
+    const side = contrastSim.pickSide(raycaster.ray, mesh, point);
+    if (!side) return false;
+    contrastSim.engage(side);
+    syncSimUI();
+    clearHover();
+    return true;
+  }
+
+  renderer.domElement.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    pointerDownPos = { x: e.clientX, y: e.clientY };
+    pointerGestureMoved = false;
+  });
+
   renderer.domElement.addEventListener("pointermove", (e) => {
     pointerClient = { x: e.clientX, y: e.clientY };
-    if (isDragging) {
+    if (e.buttons & 1) {
+      const dx = e.clientX - pointerDownPos.x;
+      const dy = e.clientY - pointerDownPos.y;
+      if (dx * dx + dy * dy > 25) pointerGestureMoved = true;
+    }
+
+    if (isDragging || pointerGestureMoved) {
       clearHover();
       return;
     }
@@ -588,6 +771,20 @@ function main() {
     hoverTimer = window.setTimeout(() => {
       if (hoverMesh === hit) showTooltip(hit);
     }, 250);
+  });
+
+  function isTapGesture(clientX: number, clientY: number): boolean {
+    if (pointerGestureMoved) return false;
+    const dx = clientX - pointerDownPos.x;
+    const dy = clientY - pointerDownPos.y;
+    return dx * dx + dy * dy <= 36;
+  }
+
+  // pointerup — do not gate on OrbitControls isDragging (it flips true on every press)
+  renderer.domElement.addEventListener("pointerup", (e) => {
+    if (e.button !== 0) return;
+    if (!isTapGesture(e.clientX, e.clientY)) return;
+    tryEngageFromClick(e.clientX, e.clientY);
   });
 
   renderer.domElement.addEventListener("pointerleave", () => clearHover());
@@ -621,6 +818,16 @@ function main() {
     if (e.key === "p" || e.key === "P") {
       e.preventDefault();
       setPanelCollapsed(!panelShell.classList.contains("collapsed"));
+      return;
+    }
+
+    if (e.key === "s" || e.key === "S") {
+      e.preventDefault();
+      if (contrastSim.active) stopSim();
+      else {
+        contrastSim.setActive(true);
+        syncSimUI();
+      }
       return;
     }
 
@@ -659,6 +866,8 @@ function main() {
     requestAnimationFrame(animate);
     const dt = Math.min(0.05, (now - lastFrame) / 1000);
     lastFrame = now;
+
+    contrastSim.update(dt);
 
     if (state.mode === "cath") {
       settleCathCamera(dt);
