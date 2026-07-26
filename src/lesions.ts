@@ -81,7 +81,7 @@ export function residualAreaFromProfile(profile: number[]): number {
   return THREE.MathUtils.clamp(meanSq, 0, 1);
 }
 
-export function normalizeProfile(raw: unknown, fallbackSeverity = 0.7): number[] {
+export function normalizeProfile(raw: unknown, fallbackSeverity = 0.5): number[] {
   if (Array.isArray(raw) && raw.length >= 3) {
     const samples = raw.map((v) => THREE.MathUtils.clamp(Number(v) || 0, 0, 1));
     // Resample to PROFILE_SAMPLES if needed
@@ -343,7 +343,7 @@ export function createLesionManager(anatomy: THREE.Object3D): LesionManager {
   function parseLesion(raw: Record<string, unknown>): LesionRecord | null {
     const vesselId = String(raw.vesselId ?? "");
     if (!byId.has(vesselId)) return null;
-    const severityFallback = THREE.MathUtils.clamp(Number(raw.severity) || 0.7, 0, 1);
+    const severityFallback = THREE.MathUtils.clamp(Number(raw.severity) || 0.5, 0, 1);
     const profile = normalizeProfile(raw.profile, severityFallback);
     return {
       id: typeof raw.id === "string" ? raw.id : uid(),
@@ -388,7 +388,7 @@ export function createLesionManager(anatomy: THREE.Object3D): LesionManager {
       const contrast = resolveContrastMesh(mesh);
       if (!contrast) return null;
       const t = closestParamOnCurve(contrast.curve, localPoint);
-      const profile = uniformProfile(0.3);
+      const profile = uniformProfile(0.5);
       const lesion: LesionRecord = {
         id: uid(),
         vesselId: contrast.id,

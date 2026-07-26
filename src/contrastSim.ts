@@ -4,9 +4,15 @@ import * as THREE from "three";
  * Epicardial coronary contrast velocity at 100% sim speed.
  * ~3.1 units/s → longest root→tip path fills in ~1.3–1.5 s,
  * closer to selective-injection opacification / epicardial flow.
+ *
+ * Bolus lifetime ≈ DIFFUSION_SEC: each parcel fades over ~2 s from the moment
+ * it arrives, so clearance marches from the injection point distal — proximal
+ * thins first while the front is still advancing. A Q-limited crawl that takes
+ * longer than that never meaningfully opacifies far territory.
  */
 const FLOW_UNITS_PER_SEC = 3.1;
-const HOLD_SEC = 0.55;
+const DIFFUSION_SEC = 2.0;
+const HOLD_SEC = 0.45;
 const CLEAR_PAUSE_SEC = 0.28;
 
 const DYE_COLOR = 0xd8e8f0;
@@ -61,8 +67,12 @@ export type ContrastSim = {
   readonly active: boolean;
   readonly speed: number;
   readonly side: InjectionSide | null;
+  /** Position in the fill→hold→wash→pause cycle ∈ [0, 1]. */
+  readonly progress: number;
   setActive(on: boolean): void;
-  setSpeed(speed01: number): void;
+  setSpeed(speedMul: number): void;
+  /** Scrub the injection cycle; no-op until a vessel is engaged. */
+  setProgress(progress01: number): void;
   /** Start / restart injection (LCA, RCA, both, or selective LAD / LCx). */
   engage(side: InjectionSide): void;
   /** Keep sim armed but clear dye, undim, and wait for another vessel click. */
@@ -144,6 +154,12 @@ type DyeOverlay = {
   uLesionT0: { value: Float32Array };
   uLesionT1: { value: Float32Array };
   uLesionFac: { value: Float32Array };
+  /** Bolus age fade: opacity falls from the injection point outward. */
+  uClock: { value: number };
+  uEffStart: { value: number };
+  uEffLen: { value: number };
+  uDiffuse: { value: number };
+  uFlow: { value: number };
 };
 
 type MatBackup = {
@@ -381,6 +397,11 @@ export function createContrastSim(
     uLesionT0: { value: Float32Array },
     uLesionT1: { value: Float32Array },
     uLesionFac: { value: Float32Array },
+    uClock: { value: number },
+    uEffStart: { value: number },
+    uEffLen: { value: number },
+    uDiffuse: { value: number },
+    uFlow: { value: number },
   ) {
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uBaseAmt = uBaseAmt;
@@ -388,6 +409,11 @@ export function createContrastSim(
       shader.uniforms.uLesionT0 = uLesionT0;
       shader.uniforms.uLesionT1 = uLesionT1;
       shader.uniforms.uLesionFac = uLesionFac;
+      shader.uniforms.uClock = uClock;
+      shader.uniforms.uEffStart = uEffStart;
+      shader.uniforms.uEffLen = uEffLen;
+      shader.uniforms.uDiffuse = uDiffuse;
+      shader.uniforms.uFlow = uFlow;
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
@@ -406,7 +432,12 @@ uniform float uBaseAmt;
 uniform float uLesionCount;
 uniform float uLesionT0[${MAX_DYE_LESIONS}];
 uniform float uLesionT1[${MAX_DYE_LESIONS}];
-uniform float uLesionFac[${MAX_DYE_LESIONS}];`,
+uniform float uLesionFac[${MAX_DYE_LESIONS}];
+uniform float uClock;
+uniform float uEffStart;
+uniform float uEffLen;
+uniform float uDiffuse;
+uniform float uFlow;`,
         )
         .replace(
           "#include <tonemapping_fragment>",
@@ -421,16 +452,25 @@ for (int i = 0; i < ${MAX_DYE_LESIONS}; i++) {
   float w = smoothstep(t0, blendEnd, vDyeAlong);
   dyeMul *= mix(1.0, uLesionFac[i], w);
 }
+// Age from when this parcel arrived: fade starts at the bolus origin and
+// moves distal — proximal clears first over ~uDiffuse seconds.
+float alongEff = uEffStart + vDyeAlong * uEffLen;
+float arrive = alongEff / max(uFlow, 0.001);
+float age = max(0.0, uClock - arrive);
+float ageFade = clamp(1.0 - age / max(uDiffuse, 0.001), 0.0, 1.0);
+dyeMul *= ageFade;
 gl_FragColor.a *= dyeMul;
 #include <tonemapping_fragment>`,
         );
     };
-    mat.customProgramCacheKey = () => "dye-lesion-dim-v3";
+    mat.customProgramCacheKey = () => "dye-lesion-age-fade-v1";
   }
 
   /** How much contrast remains distal to a stenosis (0–1). */
   function lesionTransmit(residualArea: number): number {
-    return Math.max(0.28, Math.pow(Math.max(0.02, residualArea), 0.35));
+    if (residualArea < 0.02) return 0.12;
+    // Keep in sync with flowConductance so opacification matches sluggish Q
+    return Math.max(0.12, Math.pow(residualArea, 0.75));
   }
 
   const overlays: DyeOverlay[] = vessels.map((v) => {
@@ -440,6 +480,11 @@ gl_FragColor.a *= dyeMul;
     const uLesionT0 = { value: new Float32Array(MAX_DYE_LESIONS) };
     const uLesionT1 = { value: new Float32Array(MAX_DYE_LESIONS) };
     const uLesionFac = { value: new Float32Array(MAX_DYE_LESIONS).fill(1) };
+    const uClock = { value: 0 };
+    const uEffStart = { value: 0 };
+    const uEffLen = { value: 1 };
+    const uDiffuse = { value: DIFFUSION_SEC };
+    const uFlow = { value: FLOW_UNITS_PER_SEC };
     const mat = dyeMat.clone();
     patchDyeLesionShader(
       mat,
@@ -448,6 +493,11 @@ gl_FragColor.a *= dyeMul;
       uLesionT0,
       uLesionT1,
       uLesionFac,
+      uClock,
+      uEffStart,
+      uEffLen,
+      uDiffuse,
+      uFlow,
     );
 
     const mesh = new THREE.Mesh(geo, mat);
@@ -496,6 +546,11 @@ gl_FragColor.a *= dyeMul;
       uLesionT0,
       uLesionT1,
       uLesionFac,
+      uClock,
+      uEffStart,
+      uEffLen,
+      uDiffuse,
+      uFlow,
     };
   });
 
@@ -523,6 +578,8 @@ gl_FragColor.a *= dyeMul;
   let injectDist = 0;
   let washDist = 0;
   let phaseTimer = 0;
+  /** Seconds since this bolus was administered (1× clock). Fade starts immediately. */
+  let cycleClock = 0;
   let simTime = 0;
   let maxEnd = 0;
   let lesionFlows: LesionFlow[] = [];
@@ -548,7 +605,7 @@ gl_FragColor.a *= dyeMul;
     return profile[i0] * (1 - frac) + profile[i1] * frac;
   }
 
-  /** Resistance multiplier along vessel at parameter t (≥1). */
+  /** Resistance multiplier along vessel at parameter t (≥1). High only inside a stenosis. */
   function resistanceAt(vesselId: string, t: number): number {
     const list = flowsByVessel.get(vesselId);
     if (!list?.length) return 1;
@@ -556,7 +613,7 @@ gl_FragColor.a *= dyeMul;
     for (const f of list) {
       if (t < f.t0 || t > f.t1) continue;
       if (f.residualArea < 0.02) return 1e6;
-      // Poiseuille-ish: flow ~ area² → resistance ~ 1/area², soft-clamped
+      // Poiseuille-ish through the throat: flow ~ area² → resistance ~ 1/area²
       const local = 1 / Math.max(0.04, f.residualArea * f.residualArea);
       r = Math.max(r, local);
     }
@@ -564,20 +621,71 @@ gl_FragColor.a *= dyeMul;
   }
 
   /**
-   * Effective path length of a vessel (physical length stretched by stenoses).
-   * Used so dye advances slower through narrow segments.
+   * Volumetric flow conductance through a stenosis (0–1).
+   * Distal territory is Q-limited by this factor after the dye enters the lesion.
+   */
+  function flowConductance(residualArea: number): number {
+    if (residualArea < 0.02) return 0.02;
+    // Milder than pure A² so moderate lesions still show distal motion
+    return Math.max(0.1, Math.pow(residualArea, 0.75));
+  }
+
+  /**
+   * Flow available at (vessel, t) after proximal bottlenecks.
+   * Once dye has entered a stenosis, everything distal — including side
+   * branches that take off beyond it — inherits that reduced Q.
+   */
+  function pathFlowFactor(v: ContrastVessel, t: number): number {
+    let q = 1;
+
+    const own = flowsByVessel.get(v.id);
+    if (own) {
+      for (const f of own) {
+        if (t >= f.t0 - 1e-4) q *= flowConductance(f.residualArea);
+      }
+    }
+
+    let cur: ContrastVessel | undefined = v;
+    let guard = 0;
+    while (cur?.parentId && guard++ < 24) {
+      const parent = byId.get(cur.parentId);
+      if (!parent) break;
+      const list = flowsByVessel.get(parent.id);
+      if (list) {
+        for (const f of list) {
+          // Branch only sees the bottleneck if its takeoff is at/after the lesion
+          if (cur.takeoffT >= f.t0 - 1e-4) {
+            q *= flowConductance(f.residualArea);
+          }
+        }
+      }
+      if (side === "lad" && parent.id === "lad") break;
+      if (side === "lcx" && parent.id === "lcx") break;
+      cur = parent;
+    }
+
+    return THREE.MathUtils.clamp(q, 0.08, 1);
+  }
+
+  /** Travel-cost multiplier: slow through the throat, stay sluggish distal. */
+  function travelMul(v: ContrastVessel, t: number): number {
+    const res = resistanceAt(v.id, t);
+    const flow = pathFlowFactor(v, t);
+    return Math.min(50, Math.max(res, 1 / Math.max(0.08, flow)));
+  }
+
+  /**
+   * Effective path length of a vessel (physical length stretched by stenoses
+   * and sustained distal flow limitation).
    */
   function effectiveVesselLength(v: ContrastVessel): number {
-    const list = flowsByVessel.get(v.id);
-    if (!list?.length) return v.length;
-    let extra = 0;
-    for (const f of list) {
-      if (f.residualArea < 0.02) continue; // hard-capped separately
-      const span = Math.max(0, f.t1 - f.t0) * v.length;
-      const factor = 1 / Math.max(0.06, Math.sqrt(f.residualArea));
-      extra += span * (factor - 1);
+    let costly = 0;
+    const steps = 32;
+    for (let i = 0; i < steps; i++) {
+      const t = (i + 0.5) / steps;
+      costly += (v.length / steps) * travelMul(v, t);
     }
-    return v.length + extra;
+    return costly;
   }
 
   /** Max dye front t along this vessel (CTO + sealed branch takeoffs). */
@@ -626,29 +734,33 @@ gl_FragColor.a *= dyeMul;
 
   /** Inherited thinning from parent lesions that sit proximal to this takeoff. */
   function inheritedAmountFactor(v: ContrastVessel): number {
-    let factor = 1;
-    let cur: ContrastVessel | undefined = v;
-    let guard = 0;
-    while (cur?.parentId && guard++ < 24) {
-      const parent = byId.get(cur.parentId);
-      if (!parent) break;
-      const list = flowsByVessel.get(parent.id);
-      if (list) {
-        for (const f of list) {
-          // Only if this branch originates distal to the lesion
-          if (cur.takeoffT > f.t1) {
-            factor *= lesionTransmit(f.residualArea);
-          }
-        }
-      }
-      cur = parent;
-    }
-    return THREE.MathUtils.clamp(factor, 0.2, 1);
+    // Match opacification to the same Q-limit that slows distal fill
+    return THREE.MathUtils.clamp(pathFlowFactor(v, 0), 0.12, 1);
+  }
+
+  /** Max effective distance the bolus can travel before it has diffused away. */
+  function bolusTravelDist(): number {
+    return FLOW_UNITS_PER_SEC * DIFFUSION_SEC;
+  }
+
+  function fillCapDist(): number {
+    if (maxEnd <= 0) return 0;
+    return Math.min(maxEnd, bolusTravelDist());
+  }
+
+  /** Effective distance where dye age ≥ DIFFUSION_SEC (fully cleared from proximal). */
+  function agedOutDist(): number {
+    return Math.max(0, (cycleClock - DIFFUSION_SEC) * FLOW_UNITS_PER_SEC);
   }
 
   function syncOverlayLesionUniforms(o: DyeOverlay) {
     const v = o.vessel;
     o.uBaseAmt.value = inheritedAmountFactor(v);
+    o.uClock.value = cycleClock;
+    o.uEffStart.value = effectiveStart(v);
+    o.uEffLen.value = Math.max(1e-4, effectiveVesselLength(v));
+    o.uDiffuse.value = DIFFUSION_SEC;
+    o.uFlow.value = FLOW_UNITS_PER_SEC;
     const own = flowsByVessel.get(v.id) ?? [];
     const sorted = [...own].sort((a, b) => a.t0 - b.t0);
     const n = Math.min(MAX_DYE_LESIONS, sorted.length);
@@ -693,14 +805,13 @@ gl_FragColor.a *= dyeMul;
       return v.startDelay;
     })();
 
-    // Inflate ancestor path by stenosis resistance (approx via takeoff fractions)
+    // Inflate ancestor path by stenosis + distal flow limitation
     let extra = 0;
     let cur: ContrastVessel | undefined = v;
     let guard = 0;
     while (cur?.parentId && guard++ < 24) {
       const parent = byId.get(cur.parentId);
       if (!parent) break;
-      // Cost along parent from 0 → takeoff, vs plain length * takeoff
       const takeoff = cur.takeoffT;
       const plain = parent.length * takeoff;
       let costly = 0;
@@ -708,7 +819,7 @@ gl_FragColor.a *= dyeMul;
       for (let i = 0; i < steps; i++) {
         const t = ((i + 0.5) / steps) * takeoff;
         const seg = (takeoff / steps) * parent.length;
-        costly += seg * Math.min(40, resistanceAt(parent.id, t));
+        costly += seg * travelMul(parent, t);
       }
       extra += Math.max(0, costly - plain);
 
@@ -748,7 +859,8 @@ gl_FragColor.a *= dyeMul;
       if (tA >= cap) return cap;
       const mid = (tA + tB) * 0.5;
       const segPhys = (tB - tA) * v.length;
-      const segEff = segPhys * Math.min(40, resistanceAt(v.id, mid));
+      // Throat resistance + sustained distal Q-limit (branches included)
+      const segEff = segPhys * travelMul(v, mid);
       if (spent + segEff >= local) {
         const frac = (local - spent) / Math.max(segEff, 1e-8);
         return Math.min(cap, tA + (tB - tA) * frac);
@@ -882,6 +994,7 @@ gl_FragColor.a *= dyeMul;
     washDist = 0;
     phase = "fill";
     phaseTimer = 0;
+    cycleClock = 0;
     for (const v of vessels) {
       v.dye.front.value = 0;
       v.dye.wash.value = 0;
@@ -893,6 +1006,73 @@ gl_FragColor.a *= dyeMul;
       o.startCap.visible = false;
       o.endCap.visible = false;
     }
+  }
+
+  /** Fill (and wash) duration in seconds at 1× speed — capped by bolus life. */
+  function fillDurationSec(): number {
+    return fillCapDist() / FLOW_UNITS_PER_SEC;
+  }
+
+  function cycleDurationSec(): number {
+    const fill = fillDurationSec();
+    return fill + HOLD_SEC + fill + CLEAR_PAUSE_SEC;
+  }
+
+  function getProgress(): number {
+    if (!side || maxEnd <= 0) return 0;
+    const fill = fillDurationSec();
+    const total = cycleDurationSec();
+    if (total <= 0) return 0;
+    let t = 0;
+    if (phase === "fill") {
+      t = injectDist / FLOW_UNITS_PER_SEC;
+    } else if (phase === "hold") {
+      t = fill + phaseTimer;
+    } else if (phase === "wash") {
+      t = fill + HOLD_SEC + washDist / FLOW_UNITS_PER_SEC;
+    } else {
+      t = fill + HOLD_SEC + fill + phaseTimer;
+    }
+    return THREE.MathUtils.clamp(t / total, 0, 1);
+  }
+
+  function applyProgress(progress01: number) {
+    if (!side || maxEnd <= 0) return;
+    const fill = fillDurationSec();
+    const total = cycleDurationSec();
+    if (total <= 0) return;
+    const t = THREE.MathUtils.clamp(progress01, 0, 1) * total;
+    const cap = fillCapDist();
+    cycleClock = t;
+
+    if (t < fill) {
+      phase = "fill";
+      injectDist = t * FLOW_UNITS_PER_SEC;
+      phaseTimer = 0;
+    } else if (t < fill + HOLD_SEC) {
+      phase = "hold";
+      injectDist = cap;
+      phaseTimer = t - fill;
+    } else if (t < fill + HOLD_SEC + fill) {
+      phase = "wash";
+      injectDist = cap;
+      phaseTimer = 0;
+    } else {
+      phase = "pause";
+      injectDist = cap;
+      phaseTimer = t - fill - HOLD_SEC - fill;
+    }
+
+    const aged = agedOutDist();
+    if (phase === "wash") {
+      const washAdvance = Math.max(0, t - fill - HOLD_SEC) * FLOW_UNITS_PER_SEC;
+      washDist = Math.min(injectDist, Math.max(aged, washAdvance));
+    } else if (phase === "pause") {
+      washDist = injectDist;
+    } else {
+      washDist = Math.min(injectDist, aged);
+    }
+    applyFronts();
   }
 
   function applyFronts() {
@@ -913,9 +1093,10 @@ gl_FragColor.a *= dyeMul;
 
       const front = physicalFrontT(v, injectDist);
       const wash = physicalFrontT(v, washDist);
+      const show = front > 0.001 && wash < 0.999;
       v.dye.front.value = front;
       v.dye.wash.value = wash;
-      v.dye.amount.value = front > 0.001 && wash < 0.999 ? 1 : 0;
+      v.dye.amount.value = show ? 1 : 0;
       v.dye.time.value = simTime;
 
       const idxCount = o.geo.index?.count ?? v.indexCount;
@@ -923,9 +1104,9 @@ gl_FragColor.a *= dyeMul;
       const end = Math.floor((front * idxCount) / 3) * 3;
       const count = Math.max(0, end - start);
       o.geo.setDrawRange(start, count);
-      o.mesh.visible = count > 0 && v.mesh.visible;
+      o.mesh.visible = count > 0 && show && v.mesh.visible;
 
-      // Tube opacity stays full; along-tube dimming is in the shader.
+      // Along-tube age fade is in the shader (proximal → distal)
       o.mat.opacity = 0.95;
       o.mat.emissiveIntensity = 0.75;
 
@@ -964,6 +1145,9 @@ gl_FragColor.a *= dyeMul;
     get side() {
       return side;
     },
+    get progress() {
+      return getProgress();
+    },
     setActive(on: boolean) {
       active = on;
       if (!on) {
@@ -978,8 +1162,11 @@ gl_FragColor.a *= dyeMul;
         maxEnd = 0;
       }
     },
-    setSpeed(speed01: number) {
-      speed = THREE.MathUtils.clamp(speed01, 0, 1);
+    setSpeed(speedMul: number) {
+      speed = THREE.MathUtils.clamp(speedMul, 0, 2);
+    },
+    setProgress(progress01: number) {
+      applyProgress(progress01);
     },
     engage(next: InjectionSide) {
       if (!active) {
@@ -1078,24 +1265,32 @@ gl_FragColor.a *= dyeMul;
       simTime += dt * Math.max(speed, 0.0001);
 
       if (side && speed > 0 && maxEnd > 0) {
+        cycleClock += dt * speed;
         const advance = FLOW_UNITS_PER_SEC * speed * dt;
+        const cap = fillCapDist();
+        const aged = agedOutDist();
         if (phase === "fill") {
           injectDist += advance;
-          if (injectDist >= maxEnd) {
-            injectDist = maxEnd;
+          // Bolus only travels ~DIFFUSION_SEC — beyond that it has diffused away
+          if (injectDist >= cap) {
+            injectDist = cap;
             phase = "hold";
             phaseTimer = 0;
           }
+          washDist = Math.min(injectDist, aged);
         } else if (phase === "hold") {
           phaseTimer += dt * speed;
+          washDist = Math.min(injectDist, aged);
           if (phaseTimer >= HOLD_SEC) {
             phase = "wash";
-            washDist = 0;
           }
         } else if (phase === "wash") {
-          washDist += advance;
-          if (washDist >= maxEnd) {
-            washDist = maxEnd;
+          washDist = Math.min(
+            injectDist,
+            Math.max(aged, washDist + advance),
+          );
+          if (washDist >= injectDist) {
+            washDist = injectDist;
             phase = "pause";
             phaseTimer = 0;
           }
@@ -1106,6 +1301,7 @@ gl_FragColor.a *= dyeMul;
             washDist = 0;
             phase = "fill";
             phaseTimer = 0;
+            cycleClock = 0;
           }
         }
       }

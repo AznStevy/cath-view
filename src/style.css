@@ -540,7 +540,7 @@ body,
   left: 0;
   right: 0;
   margin-inline: auto;
-  width: min(22rem, calc(100vw - 2.5rem));
+  width: min(26rem, calc(100vw - 2.5rem));
   padding: 0.65rem 0.9rem 0.55rem;
   background: var(--panel);
   border: 1px solid var(--panel-edge);
@@ -581,18 +581,37 @@ body,
   font-size: 0.75rem;
 }
 
-.sim-bar-label #sim-speed-readout {
+.sim-bar-label #sim-status {
   font-family: var(--mono);
-  font-size: 0.8rem;
-  font-weight: 600;
+  font-size: 0.72rem;
   color: var(--accent);
 }
 
-.sim-speed-row {
+.sim-transport-row {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 0.45rem;
   align-items: center;
+}
+
+.sim-speed-block {
+  margin-top: 0.45rem;
+}
+
+.sim-speed-caption {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.65rem;
+  color: var(--muted);
+  margin-bottom: 0.2rem;
+}
+
+.sim-speed-caption #sim-speed-readout {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
 }
 
 .sim-bar-play {
@@ -653,27 +672,21 @@ body,
   cursor: pointer;
 }
 
+.sim-bar input[type="range"]:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+#sim-seek {
+  accent-color: #e8c040;
+}
+
 .sim-bar-meta {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  gap: 0.4rem;
-  margin-top: 0.25rem;
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.15rem;
   font-size: 0.65rem;
   color: var(--muted);
-}
-
-.sim-bar-meta span:first-child {
-  text-align: left;
-}
-
-.sim-bar-meta #sim-status {
-  text-align: center;
-  font-family: var(--mono);
-  color: var(--text);
-}
-
-.sim-bar-meta span:last-child {
-  text-align: right;
 }
 
 .sim-bar-actions {

@@ -199,9 +199,9 @@ function buildUI(root: HTMLElement): {
       <div class="sim-bar" id="sim-bar" hidden>
         <div class="sim-bar-label">
           <span id="sim-target-label">Click a vessel to inject</span>
-          <span id="sim-speed-readout">100%</span>
+          <span id="sim-status">Waiting</span>
         </div>
-        <div class="sim-speed-row">
+        <div class="sim-transport-row">
           <button
             type="button"
             id="sim-bar-play"
@@ -218,19 +218,34 @@ function buildUI(root: HTMLElement): {
             </svg>
           </button>
           <input
+            id="sim-seek"
+            type="range"
+            min="0"
+            max="1000"
+            value="0"
+            step="1"
+            aria-label="Seek simulation"
+            disabled
+          />
+        </div>
+        <div class="sim-speed-block">
+          <div class="sim-speed-caption">
+            <span>Speed</span>
+            <span id="sim-speed-readout">100%</span>
+          </div>
+          <input
             id="sim-speed"
             type="range"
             min="0"
-            max="100"
+            max="200"
             value="100"
             step="1"
             aria-label="Contrast simulation speed"
           />
-        </div>
-        <div class="sim-bar-meta">
-          <span>Slow</span>
-          <span id="sim-status">Waiting</span>
-          <span>Fast</span>
+          <div class="sim-bar-meta">
+            <span>Slow</span>
+            <span>Fast</span>
+          </div>
         </div>
         <div class="sim-bar-actions">
           <button type="button" id="sim-bar-invert" class="sim-bar-invert" aria-pressed="false">Invert</button>
@@ -287,6 +302,7 @@ function buildUI(root: HTMLElement): {
     "lesion-panel-hint",
     "lesion-list",
     "sim-bar",
+    "sim-seek",
     "sim-speed",
     "sim-speed-readout",
     "sim-status",
@@ -564,6 +580,7 @@ function main() {
   });
 
   const simBar = els["sim-bar"];
+  const simSeek = els["sim-seek"] as HTMLInputElement;
   const simSpeed = els["sim-speed"] as HTMLInputElement;
   const simReadout = els["sim-speed-readout"];
   const simStatus = els["sim-status"];
@@ -577,6 +594,8 @@ function main() {
   /** Speed to restore when unpausing (slider stays at this while paused). */
   let speedBeforePause = 1;
   let simPaused = false;
+  let seekDragging = false;
+  let speedDragging = false;
   const btnLesionCreate = els["btn-lesion-create"] as HTMLButtonElement;
   const btnLesionShow = els["btn-lesion-show"] as HTMLButtonElement;
   const btnLesionDownload = els["btn-lesion-download"] as HTMLButtonElement;
@@ -752,20 +771,41 @@ function main() {
     syncLesionFlows();
   }
 
+  function syncSeekUI() {
+    const running = contrastSim.active && !!contrastSim.side;
+    simSeek.disabled = !running;
+    if (!seekDragging) {
+      simSeek.value = String(Math.round(contrastSim.progress * 1000));
+    }
+  }
+
   function syncSimUI() {
     const pct = Math.round(contrastSim.speed * 100);
     const armed = contrastSim.active && !contrastSim.side;
     const running = contrastSim.active && !!contrastSim.side;
-    const paused = simPaused || (running && pct === 0);
+    const paused = simPaused || (running && contrastSim.speed === 0);
 
-    if (simPaused) {
-      simSpeed.value = String(Math.round(speedBeforePause * 100));
+    // Never rewrite the speed thumb while the user is dragging it — that was
+    // snapping the slider back (especially near 0 / pause).
+    if (!speedDragging) {
+      if (simPaused) {
+        simSpeed.value = String(Math.round(speedBeforePause * 100));
+      } else {
+        simSpeed.value = String(pct);
+      }
+    }
+    if (paused && !speedDragging) {
       simReadout.textContent = "Paused";
     } else {
-      simSpeed.value = String(pct);
-      simReadout.textContent = `${pct}%`;
+      const shown = speedDragging
+        ? Math.round(Number(simSpeed.value))
+        : simPaused
+          ? Math.round(speedBeforePause * 100)
+          : pct;
+      simReadout.textContent = `${shown}%`;
     }
     simTargetLabel.textContent = sideLabel(contrastSim.side);
+    syncSeekUI();
 
     if (paused) {
       btnBarPlay.classList.add("is-paused");
@@ -795,7 +835,7 @@ function main() {
       btnSimulate.classList.add("active");
     } else if (paused) {
       simStatus.textContent = "Paused";
-      simPanelHint.textContent = "Paused. Press play or drag the speed slider.";
+      simPanelHint.textContent = "Paused. Press play or scrub the timeline.";
       btnSimulate.textContent = "Running";
       btnSimulate.classList.add("active");
     } else {
@@ -922,18 +962,53 @@ function main() {
   });
   syncLesionList();
 
+  simSpeed.addEventListener("pointerdown", () => {
+    speedDragging = true;
+  });
+  const endSpeedDrag = () => {
+    if (!speedDragging) return;
+    speedDragging = false;
+    syncSimUI();
+  };
+  window.addEventListener("pointerup", endSpeedDrag);
+  window.addEventListener("pointercancel", endSpeedDrag);
+  simSpeed.addEventListener("change", endSpeedDrag);
   simSpeed.addEventListener("input", () => {
     const v = Number(simSpeed.value) / 100;
-    if (v <= 0) {
-      if (contrastSim.speed > 0) speedBeforePause = contrastSim.speed;
-      simPaused = true;
-      contrastSim.setSpeed(0);
-    } else {
+    // Slider is live speed — including 0. Don't snap back to the pre-pause value.
+    if (v > 0) {
       speedBeforePause = v;
       simPaused = false;
-      contrastSim.setSpeed(v);
     }
-    syncSimUI();
+    contrastSim.setSpeed(v);
+    simReadout.textContent = `${Math.round(v * 100)}%`;
+    const running = contrastSim.active && !!contrastSim.side;
+    const paused = simPaused || (running && v === 0);
+    if (paused) {
+      btnBarPlay.classList.add("is-paused");
+      btnBarPlay.setAttribute("aria-label", "Play");
+      btnBarPlay.title = "Play";
+      simStatus.textContent = "Paused";
+    } else if (running) {
+      btnBarPlay.classList.remove("is-paused");
+      btnBarPlay.setAttribute("aria-label", "Pause");
+      btnBarPlay.title = "Pause";
+      simStatus.textContent = "Running";
+    }
+  });
+
+  const endSeekDrag = () => {
+    seekDragging = false;
+  };
+  simSeek.addEventListener("pointerdown", () => {
+    seekDragging = true;
+  });
+  window.addEventListener("pointerup", endSeekDrag);
+  window.addEventListener("pointercancel", endSeekDrag);
+  simSeek.addEventListener("change", endSeekDrag);
+  simSeek.addEventListener("input", () => {
+    if (!contrastSim.active || !contrastSim.side) return;
+    contrastSim.setProgress(Number(simSeek.value) / 1000);
   });
 
   syncSimUI();
@@ -1265,6 +1340,7 @@ function main() {
     lastFrame = now;
 
     contrastSim.update(dt);
+    if (contrastSim.active) syncSeekUI();
 
     if (state.mode === "cath") {
       settleCathCamera(dt);

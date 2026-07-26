@@ -57,9 +57,9 @@ export function createLesionEditor(host: HTMLElement): LesionEditorHandle {
         <div class="lesion-modal-controls">
           <label class="lesion-severity-label">
             Stenosis
-            <span id="lesion-pct-readout">70%</span>
+            <span id="lesion-pct-readout">50%</span>
           </label>
-          <input id="lesion-severity" type="range" min="0" max="100" value="70" step="1" />
+          <input id="lesion-severity" type="range" min="0" max="100" value="50" step="1" />
 
           <label class="lesion-severity-label lesion-length-label">
             Length
@@ -97,7 +97,7 @@ export function createLesionEditor(host: HTMLElement): LesionEditorHandle {
   const btnCancel = overlay.querySelector("#lesion-cancel") as HTMLButtonElement;
   const btnSave = overlay.querySelector("#lesion-save") as HTMLButtonElement;
 
-  let profile = uniformProfile(0.3);
+  let profile = uniformProfile(0.5);
   let lengthT = 0.028;
   let vesselLenMm = 100;
   let branches: BranchMark[] = [];
