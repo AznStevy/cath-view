@@ -588,6 +588,65 @@ body,
   color: var(--accent);
 }
 
+.sim-speed-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.sim-bar-play {
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(61, 184, 200, 0.4);
+  background: rgba(61, 184, 200, 0.12);
+  color: var(--accent);
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.sim-bar-play svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  grid-area: 1 / 1;
+}
+
+.sim-bar-play .icon-play {
+  display: none;
+}
+
+.sim-bar-play .icon-pause {
+  display: block;
+}
+
+.sim-bar-play.is-paused .icon-play {
+  display: block;
+}
+
+.sim-bar-play.is-paused .icon-pause {
+  display: none;
+}
+
+.sim-bar-play:hover:not(:disabled) {
+  background: rgba(61, 184, 200, 0.22);
+  border-color: rgba(61, 184, 200, 0.55);
+}
+
+.sim-bar-play:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.sim-bar-play.is-paused {
+  border-color: rgba(232, 192, 64, 0.45);
+  background: rgba(232, 192, 64, 0.12);
+  color: #e8c040;
+}
+
 .sim-bar input[type="range"] {
   width: 100%;
   accent-color: var(--accent);
@@ -619,7 +678,7 @@ body,
 
 .sim-bar-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 0.35rem;
   margin-top: 0.55rem;
 }
@@ -658,6 +717,340 @@ body,
 
 .sim-bar-actions #sim-bar-stop:hover {
   background: rgba(224, 112, 80, 0.16);
+}
+
+.sim-bar-actions .sim-bar-invert.active {
+  border-color: rgba(220, 220, 200, 0.55);
+  background: rgba(240, 240, 230, 0.18);
+  color: #f0f0e8;
+}
+
+#viewport.fluoro-invert {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+#viewport.placing-lesion {
+  cursor: crosshair;
+}
+
+#viewport.placing-lesion:active {
+  cursor: crosshair;
+}
+
+.lesion-heading {
+  margin: 0.85rem 0 0.45rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--border);
+}
+
+.lesion-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.3rem;
+}
+
+.btn-lesion,
+.btn-lesion-secondary {
+  font-family: var(--font);
+  font-size: 0.72rem;
+  font-weight: 550;
+  border-radius: 5px;
+  padding: 0.4rem 0.35rem;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.28);
+  color: var(--text);
+}
+
+.btn-lesion {
+  grid-column: 1 / -1;
+  border-color: rgba(184, 90, 74, 0.45);
+  background: rgba(184, 90, 74, 0.14);
+  color: #e8a898;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.45rem 0.5rem;
+}
+
+.btn-lesion:hover {
+  background: rgba(184, 90, 74, 0.22);
+}
+
+.btn-lesion.active {
+  border-color: rgba(232, 192, 64, 0.5);
+  background: rgba(232, 192, 64, 0.12);
+  color: #e8c040;
+}
+
+.btn-lesion-secondary:hover {
+  background: rgba(61, 184, 200, 0.12);
+  border-color: rgba(61, 184, 200, 0.35);
+}
+
+.btn-lesion-secondary.active {
+  border-color: rgba(232, 192, 64, 0.45);
+  background: rgba(232, 192, 64, 0.12);
+  color: #e8c040;
+}
+
+.lesion-list {
+  list-style: none;
+  margin-top: 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-height: 11rem;
+  overflow-y: auto;
+}
+
+.lesion-list-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.2rem;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+}
+
+.lesion-list-item.selected {
+  border-color: rgba(232, 192, 64, 0.45);
+  background: rgba(232, 192, 64, 0.08);
+}
+
+.lesion-list-main {
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  padding: 0.35rem 0.45rem;
+  cursor: pointer;
+  font-family: var(--font);
+  min-width: 0;
+}
+
+.lesion-list-name {
+  display: block;
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lesion-list-meta {
+  display: block;
+  font-size: 0.62rem;
+  font-family: var(--mono);
+  color: var(--muted);
+  margin-top: 0.08rem;
+}
+
+.lesion-list-edit,
+.lesion-list-del {
+  border: none;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font);
+  font-size: 0.68rem;
+  padding: 0 0.45rem;
+  cursor: pointer;
+}
+
+.lesion-list-edit:hover {
+  color: var(--accent);
+  background: rgba(61, 184, 200, 0.1);
+}
+
+.lesion-list-del {
+  font-size: 0.95rem;
+  line-height: 1;
+  color: #c88880;
+}
+
+.lesion-list-del:hover {
+  background: rgba(224, 112, 80, 0.16);
+  color: #e8a090;
+}
+
+.lesion-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: rgba(4, 10, 14, 0.62);
+  backdrop-filter: blur(6px);
+  padding: 1rem;
+}
+
+.lesion-modal[hidden] {
+  display: none;
+}
+
+.lesion-modal-card {
+  width: min(26rem, 100%);
+  background: var(--panel-solid);
+  border: 1px solid var(--panel-edge);
+  border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+  padding: 1rem 1.1rem 0.9rem;
+}
+
+.lesion-modal-head h2 {
+  font-size: 1.05rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.lesion-modal-sub {
+  margin-top: 0.2rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.lesion-modal-body {
+  margin-top: 0.85rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.lesion-circle-wrap {
+  display: grid;
+  place-items: center;
+}
+
+.lesion-circle-wrap canvas {
+  width: min(280px, 72vw);
+  height: auto;
+  touch-action: none;
+  cursor: crosshair;
+  border-radius: 50%;
+}
+
+.lesion-severity-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+}
+
+.lesion-severity-label #lesion-pct-readout {
+  font-family: var(--mono);
+  font-weight: 600;
+  color: #e8a898;
+  font-size: 0.85rem;
+}
+
+.lesion-modal-controls input[type="range"] {
+  width: 100%;
+  accent-color: #b85a4a;
+}
+
+.lesion-paint-hint {
+  margin-top: 0.4rem;
+  font-size: 0.68rem;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.lesion-length-label {
+  margin-top: 0.65rem;
+}
+
+.lesion-edit-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+}
+
+.lesion-btn-soft {
+  font-family: var(--font);
+  font-size: 0.75rem;
+  font-weight: 550;
+  border-radius: 6px;
+  padding: 0.45rem;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--muted);
+}
+
+.lesion-btn-soft:hover {
+  color: var(--text);
+  background: rgba(61, 184, 200, 0.1);
+  border-color: rgba(61, 184, 200, 0.35);
+}
+
+.lesion-occlude {
+  margin-top: 0;
+  width: auto;
+  font-family: var(--font);
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 0.45rem;
+  cursor: pointer;
+  border: 1px solid rgba(184, 90, 74, 0.5);
+  background: rgba(184, 90, 74, 0.16);
+  color: #e8a898;
+}
+
+.lesion-occlude:hover {
+  background: rgba(184, 90, 74, 0.26);
+}
+
+.lesion-modal-foot {
+  margin-top: 0.9rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem;
+}
+
+.lesion-btn-ghost,
+.lesion-btn-primary {
+  font-family: var(--font);
+  font-size: 0.8rem;
+  font-weight: 550;
+  border-radius: 6px;
+  padding: 0.5rem;
+  cursor: pointer;
+}
+
+.lesion-btn-ghost {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+}
+
+.lesion-btn-ghost:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.lesion-btn-primary {
+  border: 1px solid rgba(61, 184, 200, 0.45);
+  background: rgba(61, 184, 200, 0.16);
+  color: var(--accent);
+}
+
+.lesion-btn-primary:hover {
+  background: rgba(61, 184, 200, 0.26);
+}
+
+@media (max-width: 520px) {
+  .sim-bar-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .sim-bar-actions .sim-bar-invert {
+    grid-column: 1 / -1;
+  }
 }
 
 .legend {

@@ -20,6 +20,13 @@ import {
   type VesselGroup,
 } from "./coronaryAnatomy";
 import { createContrastSim, type InjectionSide } from "./contrastSim";
+import { createLesionEditor } from "./lesionEditor";
+import {
+  createLesionManager,
+  lesionLengthMm,
+  segmentLabel,
+  severityPct,
+} from "./lesions";
 
 type ViewMode = "cath" | "orbit";
 
@@ -151,6 +158,18 @@ function buildUI(root: HTMLElement): {
             <p class="sim-panel-hint" id="sim-panel-hint">
               Press Simulate, then click LAD, LCx, LM, or RCA on the model.
             </p>
+            <h3 class="lesion-heading">Lesions</h3>
+            <div class="lesion-actions">
+              <button type="button" id="btn-lesion-create" class="btn-lesion">Create lesion</button>
+              <button type="button" id="btn-lesion-show" class="btn-lesion-secondary" title="Dim model, keep lesions visible">Show lesions</button>
+              <button type="button" id="btn-lesion-download" class="btn-lesion-secondary" title="Download lesions JSON">Download</button>
+              <button type="button" id="btn-lesion-load" class="btn-lesion-secondary" title="Load lesions JSON">Load</button>
+              <input type="file" id="lesion-file-input" accept="application/json,.json" hidden />
+            </div>
+            <p class="sim-panel-hint" id="lesion-panel-hint">
+              Create a lesion, then click a vessel on the model.
+            </p>
+            <ul class="lesion-list" id="lesion-list"></ul>
           </div>
 
           <div class="legend">
@@ -182,21 +201,39 @@ function buildUI(root: HTMLElement): {
           <span id="sim-target-label">Click a vessel to inject</span>
           <span id="sim-speed-readout">100%</span>
         </div>
-        <input
-          id="sim-speed"
-          type="range"
-          min="0"
-          max="100"
-          value="100"
-          step="1"
-          aria-label="Contrast simulation speed"
-        />
+        <div class="sim-speed-row">
+          <button
+            type="button"
+            id="sim-bar-play"
+            class="sim-bar-play"
+            aria-label="Pause"
+            title="Pause"
+          >
+            <svg class="icon-pause" viewBox="0 0 12 12" aria-hidden="true">
+              <rect x="2" y="1.5" width="2.8" height="9" rx="0.6" fill="currentColor" />
+              <rect x="7.2" y="1.5" width="2.8" height="9" rx="0.6" fill="currentColor" />
+            </svg>
+            <svg class="icon-play" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="M3.2 1.4 L10.2 6 L3.2 10.6 Z" fill="currentColor" />
+            </svg>
+          </button>
+          <input
+            id="sim-speed"
+            type="range"
+            min="0"
+            max="100"
+            value="100"
+            step="1"
+            aria-label="Contrast simulation speed"
+          />
+        </div>
         <div class="sim-bar-meta">
-          <span>Pause</span>
+          <span>Slow</span>
           <span id="sim-status">Waiting</span>
-          <span>100%</span>
+          <span>Fast</span>
         </div>
         <div class="sim-bar-actions">
+          <button type="button" id="sim-bar-invert" class="sim-bar-invert" aria-pressed="false">Invert</button>
           <button type="button" id="sim-bar-change">Change vessel</button>
           <button type="button" id="sim-bar-stop">Stop</button>
         </div>
@@ -242,11 +279,20 @@ function buildUI(root: HTMLElement): {
     "btn-heart",
     "btn-simulate",
     "sim-panel-hint",
+    "btn-lesion-create",
+    "btn-lesion-show",
+    "btn-lesion-download",
+    "btn-lesion-load",
+    "lesion-file-input",
+    "lesion-panel-hint",
+    "lesion-list",
     "sim-bar",
     "sim-speed",
     "sim-speed-readout",
     "sim-status",
     "sim-target-label",
+    "sim-bar-play",
+    "sim-bar-invert",
     "sim-bar-change",
     "sim-bar-stop",
     "btn-vessels-all",
@@ -370,6 +416,14 @@ function main() {
   const heartShell = anatomy.getObjectByName("heartShell")!;
   const vessels = anatomy.getObjectByName("vessels");
   const contrastSim = createContrastSim(anatomy, [ground, ring]);
+  const lesionMgr = createLesionManager(anatomy);
+  const lesionEditor = createLesionEditor(app as HTMLElement);
+  const viewportEl = document.getElementById("viewport") as HTMLElement;
+
+  function syncLesionFlows() {
+    contrastSim.setLesionFlows(lesionMgr.lesionFlows());
+  }
+  syncLesionFlows();
 
   function applyVesselVisibility() {
     for (const g of VESSEL_GROUPS) {
@@ -516,9 +570,118 @@ function main() {
   const simTargetLabel = els["sim-target-label"];
   const simPanelHint = els["sim-panel-hint"];
   const btnSimulate = els["btn-simulate"];
+  const btnBarPlay = els["sim-bar-play"] as HTMLButtonElement;
+  const btnBarInvert = els["sim-bar-invert"] as HTMLButtonElement;
   const btnBarChange = els["sim-bar-change"] as HTMLButtonElement;
   const btnBarStop = els["sim-bar-stop"] as HTMLButtonElement;
+  /** Speed to restore when unpausing (slider stays at this while paused). */
+  let speedBeforePause = 1;
+  let simPaused = false;
+  const btnLesionCreate = els["btn-lesion-create"] as HTMLButtonElement;
+  const btnLesionShow = els["btn-lesion-show"] as HTMLButtonElement;
+  const btnLesionDownload = els["btn-lesion-download"] as HTMLButtonElement;
+  const btnLesionLoad = els["btn-lesion-load"] as HTMLButtonElement;
+  const lesionFileInput = els["lesion-file-input"] as HTMLInputElement;
+  const lesionPanelHint = els["lesion-panel-hint"];
+  const lesionListEl = els["lesion-list"];
   let hoverEmissive = 0.08;
+  let fluoroInvert = false;
+  let lesionFocus = false;
+  type FocusBackup = {
+    opacity: number;
+    transparent: boolean;
+    depthWrite: boolean;
+    emissiveIntensity?: number;
+  };
+  const lesionFocusBackups = new Map<object, FocusBackup>();
+  /** Newly placed lesion awaiting editor save; cancel removes it. */
+  let pendingNewLesionId: string | null = null;
+
+  function setFluoroInvert(on: boolean) {
+    fluoroInvert = on;
+    viewportEl.classList.toggle("fluoro-invert", on);
+    btnBarInvert.classList.toggle("active", on);
+    btnBarInvert.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+
+  function applyLesionFocus(on: boolean) {
+    // Restore any previous focus pass before applying / clearing
+    if (lesionFocusBackups.size) {
+      for (const [obj, b] of lesionFocusBackups) {
+        if (!(obj instanceof THREE.Material)) continue;
+        const mat = obj as THREE.MeshStandardMaterial | THREE.MeshBasicMaterial;
+        if (!("opacity" in mat)) continue;
+        mat.opacity = b.opacity;
+        mat.transparent = b.transparent;
+        mat.depthWrite = b.depthWrite;
+        if (
+          mat instanceof THREE.MeshStandardMaterial &&
+          b.emissiveIntensity != null
+        ) {
+          mat.emissiveIntensity = b.emissiveIntensity;
+        }
+        mat.needsUpdate = true;
+      }
+      lesionFocusBackups.clear();
+    }
+
+    lesionFocus = on;
+    btnLesionShow.classList.toggle("active", on);
+    btnLesionShow.setAttribute("aria-pressed", on ? "true" : "false");
+    btnLesionShow.textContent = on ? "Showing…" : "Show lesions";
+    if (!on) return;
+
+    const dimTargets = [anatomy, ground, ring];
+    for (const root of dimTargets) {
+      root.traverse((obj) => {
+        if (!(obj instanceof THREE.Mesh)) return;
+        if (obj.userData.isLesionMesh) {
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          for (const m of mats) {
+            if (!(m instanceof THREE.MeshStandardMaterial)) continue;
+            if (!lesionFocusBackups.has(m)) {
+              lesionFocusBackups.set(m, {
+                opacity: m.opacity,
+                transparent: m.transparent,
+                depthWrite: m.depthWrite,
+                emissiveIntensity: m.emissiveIntensity,
+              });
+            }
+            m.transparent = true;
+            m.opacity = 1;
+            m.emissiveIntensity = Math.max(m.emissiveIntensity, 0.55);
+            m.depthWrite = true;
+            m.needsUpdate = true;
+          }
+          return;
+        }
+        if (obj.userData.isDyeOverlay) return;
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (const m of mats) {
+          if (!("opacity" in m)) continue;
+          const mat = m as THREE.MeshStandardMaterial | THREE.MeshBasicMaterial;
+          if (!lesionFocusBackups.has(mat)) {
+            lesionFocusBackups.set(mat, {
+              opacity: mat.opacity,
+              transparent: mat.transparent,
+              depthWrite: mat.depthWrite,
+              emissiveIntensity:
+                mat instanceof THREE.MeshStandardMaterial
+                  ? mat.emissiveIntensity
+                  : undefined,
+            });
+          }
+          mat.transparent = true;
+          mat.opacity = 0.06;
+          mat.depthWrite = false;
+          if (mat instanceof THREE.MeshStandardMaterial) {
+            mat.emissiveIntensity = 0.02;
+          }
+          mat.needsUpdate = true;
+        }
+      });
+    }
+  }
 
   function sideLabel(side: InjectionSide | null): string {
     if (side === "left") return "Left coronary (LM)";
@@ -529,14 +692,92 @@ function main() {
     return "Click a vessel on the model";
   }
 
+  function syncLesionList() {
+    lesionListEl.innerHTML = "";
+    btnLesionCreate.classList.toggle("active", lesionMgr.placing);
+    btnLesionCreate.textContent = lesionMgr.placing ? "Click vessel…" : "Create lesion";
+    viewportEl.classList.toggle("placing-lesion", lesionMgr.placing);
+    lesionPanelHint.textContent = lesionMgr.placing
+      ? "Click a vessel on the model to place the lesion."
+      : lesionMgr.lesions.length
+        ? `${lesionMgr.lesions.length} lesion${lesionMgr.lesions.length === 1 ? "" : "s"} defined.`
+        : "Create a lesion, then click a vessel on the model.";
+
+    for (const L of lesionMgr.lesions) {
+      const li = document.createElement("li");
+      li.className = "lesion-list-item";
+      if (L.id === lesionMgr.selectedId) li.classList.add("selected");
+      const name = lesionMgr.vesselName(L.vesselId);
+      const pct = severityPct(L.severity);
+      const seg = segmentLabel(L.t);
+      const mm = Math.round(
+        lesionLengthMm(L.lengthT, lesionMgr.vesselLengthMm(L.vesselId)),
+      );
+      li.innerHTML = `
+        <button type="button" class="lesion-list-main" data-id="${L.id}">
+          <span class="lesion-list-name">${name}</span>
+          <span class="lesion-list-meta">${seg} · ${mm} mm · ${pct}%${pct >= 99 ? " · CTO" : ""}</span>
+        </button>
+        <button type="button" class="lesion-list-edit" data-edit="${L.id}" title="Edit">Edit</button>
+        <button type="button" class="lesion-list-del" data-del="${L.id}" title="Delete">×</button>
+      `;
+      lesionListEl.appendChild(li);
+    }
+  }
+
+  async function openLesionEditor(id: string, isNew: boolean) {
+    const L = lesionMgr.get(id);
+    if (!L) return;
+    lesionMgr.select(id);
+    const result = await lesionEditor.open({
+      lesion: L,
+      vesselName: lesionMgr.vesselName(L.vesselId),
+      vesselLengthMm: lesionMgr.vesselLengthMm(L.vesselId),
+      branches: lesionMgr.branchMarks(L),
+      title: isNew ? "Define lesion" : "Edit lesion",
+    });
+    if (!result) {
+      if (isNew && pendingNewLesionId === id) {
+        lesionMgr.remove(id);
+        pendingNewLesionId = null;
+      }
+      return;
+    }
+    lesionMgr.update(id, {
+      profile: result.profile,
+      severity: result.severity,
+      lengthT: result.lengthT,
+    });
+    pendingNewLesionId = null;
+    syncLesionFlows();
+  }
+
   function syncSimUI() {
     const pct = Math.round(contrastSim.speed * 100);
     const armed = contrastSim.active && !contrastSim.side;
     const running = contrastSim.active && !!contrastSim.side;
+    const paused = simPaused || (running && pct === 0);
 
-    simSpeed.value = String(pct);
-    simReadout.textContent = `${pct}%`;
+    if (simPaused) {
+      simSpeed.value = String(Math.round(speedBeforePause * 100));
+      simReadout.textContent = "Paused";
+    } else {
+      simSpeed.value = String(pct);
+      simReadout.textContent = `${pct}%`;
+    }
     simTargetLabel.textContent = sideLabel(contrastSim.side);
+
+    if (paused) {
+      btnBarPlay.classList.add("is-paused");
+      btnBarPlay.setAttribute("aria-label", "Play");
+      btnBarPlay.title = "Play";
+    } else {
+      btnBarPlay.classList.remove("is-paused");
+      btnBarPlay.setAttribute("aria-label", "Pause");
+      btnBarPlay.title = "Pause";
+    }
+    btnBarPlay.disabled = !running;
+    btnBarPlay.hidden = !contrastSim.active;
 
     if (!contrastSim.active) {
       simStatus.textContent = "Off";
@@ -544,15 +785,17 @@ function main() {
         "Press Simulate, then click LAD, LCx, LM, or RCA on the model.";
       btnSimulate.textContent = "Simulate";
       btnSimulate.classList.remove("active");
+      if (fluoroInvert) setFluoroInvert(false);
+      simPaused = false;
     } else if (armed) {
       simStatus.textContent = "Waiting";
       simPanelHint.textContent =
         "Click LAD, LCx, LM, or RCA to inject. Click between the ostia for both.";
       btnSimulate.textContent = "Waiting…";
       btnSimulate.classList.add("active");
-    } else if (pct === 0) {
+    } else if (paused) {
       simStatus.textContent = "Paused";
-      simPanelHint.textContent = "Paused. Use Change vessel or Stop on the screen bar.";
+      simPanelHint.textContent = "Paused. Press play or drag the speed slider.";
       btnSimulate.textContent = "Running";
       btnSimulate.classList.add("active");
     } else {
@@ -562,35 +805,134 @@ function main() {
       btnSimulate.classList.add("active");
     }
 
-    // Always show both actions on the screen bar while sim is active
     btnBarChange.hidden = false;
     btnBarChange.disabled = !running;
     btnBarChange.textContent = "Change vessel";
     btnBarStop.hidden = false;
+    btnBarInvert.hidden = false;
     simBar.hidden = !contrastSim.active;
-    hoverEmissive = running ? 0.05 : 0.08;
+    hoverEmissive = running && !paused ? 0.05 : 0.08;
+  }
+
+  function setSimPaused(paused: boolean) {
+    if (!contrastSim.active || !contrastSim.side) return;
+    if (paused) {
+      if (contrastSim.speed > 0) speedBeforePause = contrastSim.speed;
+      else if (Number(simSpeed.value) > 0) {
+        speedBeforePause = Number(simSpeed.value) / 100;
+      }
+      simPaused = true;
+      contrastSim.setSpeed(0);
+    } else {
+      simPaused = false;
+      let resume = Number(simSpeed.value) / 100;
+      if (resume <= 0) resume = speedBeforePause > 0 ? speedBeforePause : 1;
+      speedBeforePause = resume;
+      simSpeed.value = String(Math.round(resume * 100));
+      contrastSim.setSpeed(resume);
+    }
+    syncSimUI();
   }
 
   function stopSim() {
     contrastSim.setActive(false);
+    simPaused = false;
     syncSimUI();
+    if (lesionFocus) applyLesionFocus(true);
   }
 
   function changeVessel() {
     contrastSim.clearSelection();
     syncSimUI();
+    if (lesionFocus) applyLesionFocus(true);
   }
 
   btnSimulate.addEventListener("click", () => {
-    if (contrastSim.active) return; // Stop / Change live on the screen bar
+    if (contrastSim.active) return;
+    lesionMgr.setPlacing(false);
     contrastSim.setActive(true);
     syncSimUI();
   });
   btnBarChange.addEventListener("click", changeVessel);
   btnBarStop.addEventListener("click", stopSim);
+  btnBarPlay.addEventListener("click", () => {
+    setSimPaused(!(simPaused || contrastSim.speed === 0));
+  });
+  btnBarInvert.addEventListener("click", () => {
+    setFluoroInvert(!fluoroInvert);
+  });
+
+  btnLesionCreate.addEventListener("click", () => {
+    if (lesionMgr.placing) {
+      lesionMgr.setPlacing(false);
+      return;
+    }
+    if (contrastSim.active && contrastSim.side) {
+      contrastSim.clearSelection();
+      syncSimUI();
+    }
+    lesionMgr.setPlacing(true);
+  });
+  btnLesionShow.addEventListener("click", () => {
+    applyLesionFocus(!lesionFocus);
+  });
+  btnLesionDownload.addEventListener("click", () => lesionMgr.download());
+  btnLesionLoad.addEventListener("click", () => lesionFileInput.click());
+  lesionFileInput.addEventListener("change", async () => {
+    const file = lesionFileInput.files?.[0];
+    lesionFileInput.value = "";
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text) as unknown;
+      const result = lesionMgr.loadJSON(data);
+      if (!result.ok) {
+        window.alert(result.error);
+        return;
+      }
+      syncLesionFlows();
+    } catch {
+      window.alert("Could not read lesion file.");
+    }
+  });
+
+  lesionListEl.addEventListener("click", (e) => {
+    const t = e.target as HTMLElement;
+    const del = t.closest<HTMLElement>("[data-del]");
+    if (del?.dataset.del) {
+      lesionMgr.remove(del.dataset.del);
+      syncLesionFlows();
+      return;
+    }
+    const edit = t.closest<HTMLElement>("[data-edit]");
+    if (edit?.dataset.edit) {
+      void openLesionEditor(edit.dataset.edit, false);
+      return;
+    }
+    const main = t.closest<HTMLElement>("[data-id]");
+    if (main?.dataset.id) {
+      lesionMgr.select(main.dataset.id);
+    }
+  });
+
+  lesionMgr.onChange(() => {
+    syncLesionList();
+    syncLesionFlows();
+    if (lesionFocus) applyLesionFocus(true);
+  });
+  syncLesionList();
 
   simSpeed.addEventListener("input", () => {
-    contrastSim.setSpeed(Number(simSpeed.value) / 100);
+    const v = Number(simSpeed.value) / 100;
+    if (v <= 0) {
+      if (contrastSim.speed > 0) speedBeforePause = contrastSim.speed;
+      simPaused = true;
+      contrastSim.setSpeed(0);
+    } else {
+      speedBeforePause = v;
+      simPaused = false;
+      contrastSim.setSpeed(v);
+    }
     syncSimUI();
   });
 
@@ -722,7 +1064,8 @@ function main() {
         obj instanceof THREE.Mesh &&
         obj.visible &&
         obj.userData.isVessel &&
-        !obj.userData.isDyeOverlay
+        !obj.userData.isDyeOverlay &&
+        !obj.userData.isLesionMesh
       ) {
         targets.push(obj);
       }
@@ -753,7 +1096,19 @@ function main() {
     return { mesh: hits[0].object as THREE.Mesh, point: hits[0].point.clone() };
   }
 
+  function tryPlaceLesionFromClick(clientX: number, clientY: number) {
+    if (!lesionMgr.placing) return false;
+    const { mesh, point } = pickVesselHit(clientX, clientY);
+    const lesion = lesionMgr.tryPlaceFromClick(mesh, point);
+    if (!lesion) return false;
+    pendingNewLesionId = lesion.id;
+    clearHover();
+    void openLesionEditor(lesion.id, true);
+    return true;
+  }
+
   function tryEngageFromClick(clientX: number, clientY: number) {
+    if (lesionMgr.placing) return false;
     if (!contrastSim.active) return false;
     const { mesh, point } = pickVesselHit(clientX, clientY);
     const side = contrastSim.pickSide(raycaster.ray, mesh, point);
@@ -819,6 +1174,7 @@ function main() {
   renderer.domElement.addEventListener("pointerup", (e) => {
     if (e.button !== 0) return;
     if (!isTapGesture(e.clientX, e.clientY)) return;
+    if (tryPlaceLesionFromClick(e.clientX, e.clientY)) return;
     tryEngageFromClick(e.clientX, e.clientY);
   });
 
@@ -856,10 +1212,16 @@ function main() {
       return;
     }
 
+    if (e.key === "Escape" && lesionMgr.placing) {
+      lesionMgr.setPlacing(false);
+      return;
+    }
+
     if (e.key === "s" || e.key === "S") {
       e.preventDefault();
       if (contrastSim.active) stopSim();
       else {
+        lesionMgr.setPlacing(false);
         contrastSim.setActive(true);
         syncSimUI();
       }
