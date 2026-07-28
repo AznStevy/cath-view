@@ -463,6 +463,6 @@ export const VIEW_PRESETS: { name: string; primary: number; secondary: number }[
   { name: "LAO caudal", primary: 40, secondary: -30 },
   { name: "LAO cranial", primary: 40, secondary: 30 },
   { name: "Lateral", primary: 90, secondary: 0 },
-  { name: "Spider", primary: 50, secondary: -30 },
+  { name: "Spider", primary: 0, secondary: -45 },
   { name: "LAO cranial (LAD)", primary: 30, secondary: 25 },
 ];
