@@ -135,9 +135,9 @@ function buildUI(root: HTMLElement): {
             </div>
             <div class="slider-row">
               <label for="angulation-slider"><span id="angulation-label">Cranial</span></label>
-              <input id="angulation-slider" type="range" min="0" max="45" value="0" step="1" />
+              <input id="angulation-slider" type="range" min="0" max="90" value="0" step="1" />
               <div class="num-wrap">
-                <input id="angulation-input" type="number" min="0" max="45" step="1" value="0" aria-label="Angulation degrees" />
+                <input id="angulation-input" type="number" min="0" max="90" step="1" value="0" aria-label="Angulation degrees" />
                 <span class="unit">°</span>
               </div>
             </div>
@@ -502,7 +502,7 @@ function main() {
 
   function setAngles(primary: number, secondary: number, animate = true) {
     state.primary = clamp(primary, -90, 90);
-    state.secondary = clamp(secondary, -45, 45);
+    state.secondary = clamp(secondary, -90, 90);
     syncUIFromState();
     if (state.mode === "cath") applyCathCamera(animate);
   }
@@ -540,7 +540,7 @@ function main() {
   const setAngulationMag = (mag: number) => {
     const sign = state.secondary >= 0 ? 1 : -1;
     setMode("cath");
-    setAngles(state.primary, sign * clamp(mag, 0, 45), false);
+    setAngles(state.primary, sign * clamp(mag, 0, 90), false);
   };
 
   els["oblique-slider"].addEventListener("input", () => {
@@ -735,7 +735,7 @@ function main() {
       li.innerHTML = `
         <button type="button" class="lesion-list-main" data-id="${L.id}">
           <span class="lesion-list-name">${name}</span>
-          <span class="lesion-list-meta">${seg} · ${mm} mm · ${pct}%${pct >= 99 ? " · CTO" : ""}</span>
+          <span class="lesion-list-meta">${seg} · ${mm} mm · ${pct}%${pct >= 99 ? " · occluded" : ""}</span>
         </button>
         <button type="button" class="lesion-list-edit" data-edit="${L.id}" title="Edit">Edit</button>
         <button type="button" class="lesion-list-del" data-del="${L.id}" title="Delete">×</button>
@@ -1267,7 +1267,7 @@ function main() {
     if (state.mode !== "orbit" || state.syncing) return;
     const inferred = anglesFromCameraPosition(camera.position);
     state.primary = inferred.primary;
-    state.secondary = clamp(inferred.secondary, -45, 45);
+    state.secondary = clamp(inferred.secondary, -90, 90);
     syncUIFromState();
   });
 

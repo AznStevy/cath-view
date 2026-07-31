@@ -130,7 +130,7 @@ export function createLesionEditor(host: HTMLElement): LesionEditorHandle {
     const area = residualAreaFromProfile(profile);
     slider.value = String(Math.round(sev * 100));
     pctReadout.textContent =
-      area < 0.02 ? "CTO" : `${severityPct(sev)}%`;
+      area < 0.02 ? "Occluded" : `${severityPct(sev)}%`;
     lengthSlider.value = String(lengthToSlider(lengthT));
     lengthReadout.textContent = formatLengthMm(lengthT);
   }
@@ -290,10 +290,10 @@ export function createLesionEditor(host: HTMLElement): LesionEditorHandle {
       ctx.arc(cx, cy, 12, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = "#e8c0b0";
-      ctx.font = "600 13px Outfit, sans-serif";
+      ctx.font = "600 11px Outfit, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText("CTO", cx, cy);
+      ctx.fillText("100%", cx, cy);
     }
 
     for (const b of branches) {
@@ -333,7 +333,7 @@ export function createLesionEditor(host: HTMLElement): LesionEditorHandle {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(
-      occluded ? "CTO" : `${severityPct(severityFromProfile(profile))}%`,
+      occluded ? "Occluded" : `${severityPct(severityFromProfile(profile))}%`,
       cx,
       cy + R + 21,
     );

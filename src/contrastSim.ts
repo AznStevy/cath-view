@@ -78,7 +78,7 @@ export type ContrastSim = {
   /** Keep sim armed but clear dye, undim, and wait for another vessel click. */
   clearSelection(): void;
   /**
-   * Lesions affect fill: CTO stops dye, partial stenoses slow the front
+   * Lesions affect fill: total occlusion stops dye, partial stenoses slow the front
    * and thin opacification distal to the narrowing. Eccentric plaque can
    * also seal a branch takeoff when residual radius at that angle is ~0.
    */
@@ -728,9 +728,9 @@ gl_FragColor.a *= dyeMul;
     return cum[cum.length - 1] ?? v.length;
   }
 
-  /** Max dye front t along this vessel (CTO + sealed branch takeoffs). */
+  /** Max dye front t along this vessel (occlusion + sealed branch takeoffs). */
   function occlusionCap(v: ContrastVessel): number {
-    // Ancestor CTO / sealed takeoff
+    // Ancestor total occlusion / sealed takeoff
     let child: ContrastVessel = v;
     let parent = v.parentId ? byId.get(v.parentId) : undefined;
     let guard = 0;
@@ -761,7 +761,7 @@ gl_FragColor.a *= dyeMul;
       parent = parent.parentId ? byId.get(parent.parentId) : undefined;
     }
 
-    // Own CTO: stop at earliest occlusive start
+    // Own total occlusion: stop at earliest occlusive start
     const own = flowsByVessel.get(v.id);
     let cap = 1;
     if (own) {
