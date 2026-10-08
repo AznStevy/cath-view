@@ -256,11 +256,22 @@ export type LesionManager = {
     mesh: THREE.Mesh | null,
     point: THREE.Vector3 | null,
   ): LesionRecord | null;
+  /** Place or update lesions from a parsed cath report. Nearby lesions on the same vessel are updated. */
+  addRecords(
+    items: Array<{ vesselId: string; t: number; severity: number; lengthT?: number }>,
+  ): LesionRecord[];
   update(
     id: string,
     patch: Partial<Pick<LesionRecord, "severity" | "t" | "lengthT" | "profile">>,
   ): void;
   remove(id: string): void;
+  /** Move an existing lesion to the vessel point under a click. */
+  moveFromClick(
+    id: string,
+    mesh: THREE.Mesh | null,
+    point: THREE.Vector3 | null,
+  ): boolean;
+  clear(): void;
   get(id: string): LesionRecord | undefined;
   vesselName(vesselId: string): string;
   /** Approximate vessel length in mm (model units × scale). */
@@ -404,6 +415,49 @@ export function createLesionManager(anatomy: THREE.Object3D): LesionManager {
       notify();
       return lesion;
     },
+    addRecords(items) {
+      const added: LesionRecord[] = [];
+      for (const item of items) {
+        if (!byId.has(item.vesselId)) continue;
+        const t = THREE.MathUtils.clamp(item.t, 0, 1);
+        const severity = THREE.MathUtils.clamp(item.severity, 0, 1);
+        const lengthT = THREE.MathUtils.clamp(
+          item.lengthT ?? DEFAULT_LENGTH_T,
+          LENGTH_T_MIN,
+          LENGTH_T_MAX,
+        );
+        const profile = uniformProfile(1 - severity);
+        const existing = lesions.find(
+          (L) => L.vesselId === item.vesselId && Math.abs(L.t - t) < 0.12,
+        );
+        if (existing) {
+          existing.t = t;
+          existing.profile = profile;
+          existing.severity = severityFromProfile(profile);
+          existing.lengthT = lengthT;
+          rebuildMesh(existing);
+          added.push(existing);
+          continue;
+        }
+        const lesion: LesionRecord = {
+          id: uid(),
+          vesselId: item.vesselId,
+          t,
+          severity: severityFromProfile(profile),
+          lengthT,
+          profile,
+        };
+        lesions.push(lesion);
+        rebuildMesh(lesion);
+        added.push(lesion);
+      }
+      if (added.length) {
+        selectedId = added[added.length - 1]!.id;
+        placing = false;
+        notify();
+      }
+      return added;
+    },
     update(id, patch) {
       const L = lesions.find((x) => x.id === id);
       if (!L) return;
@@ -433,6 +487,33 @@ export function createLesionManager(anatomy: THREE.Object3D): LesionManager {
         meshById.delete(id);
       }
       if (selectedId === id) selectedId = null;
+      notify();
+    },
+    moveFromClick(id, mesh, point) {
+      const L = lesions.find((x) => x.id === id);
+      if (!L || !mesh || !point) return false;
+      const localPoint = point.clone();
+      anatomy.worldToLocal(localPoint);
+      const contrast = resolveContrastMesh(mesh);
+      if (!contrast) return false;
+      L.vesselId = contrast.id;
+      L.t = closestParamOnCurve(contrast.curve, localPoint);
+      selectedId = L.id;
+      rebuildMesh(L);
+      notify();
+      return true;
+    },
+    clear() {
+      if (!lesions.length) return;
+      for (const mesh of meshById.values()) {
+        group.remove(mesh);
+        mesh.geometry.dispose();
+        (mesh.material as THREE.Material).dispose();
+      }
+      meshById.clear();
+      lesions.splice(0, lesions.length);
+      selectedId = null;
+      placing = false;
       notify();
     },
     get(id) {

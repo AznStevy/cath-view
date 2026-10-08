@@ -21,6 +21,7 @@ import {
 } from "./coronaryAnatomy";
 import { createContrastSim, type InjectionSide } from "./contrastSim";
 import { createLesionEditor } from "./lesionEditor";
+import { createReportImport } from "./reportImport";
 import {
   createLesionManager,
   lesionLengthMm,
@@ -161,9 +162,11 @@ function buildUI(root: HTMLElement): {
             <h3 class="lesion-heading">Lesions</h3>
             <div class="lesion-actions">
               <button type="button" id="btn-lesion-create" class="btn-lesion">Create lesion</button>
+              <button type="button" id="btn-lesion-report" class="btn-lesion-report">From cath report</button>
               <button type="button" id="btn-lesion-show" class="btn-lesion-secondary" title="Dim model, keep lesions visible">Show lesions</button>
               <button type="button" id="btn-lesion-download" class="btn-lesion-secondary" title="Download lesions JSON">Download</button>
               <button type="button" id="btn-lesion-load" class="btn-lesion-secondary" title="Load lesions JSON">Load</button>
+              <button type="button" id="btn-lesion-clear" class="btn-lesion-clear" title="Remove every lesion">Clear all</button>
               <input type="file" id="lesion-file-input" accept="application/json,.json" hidden />
             </div>
             <p class="sim-panel-hint" id="lesion-panel-hint">
@@ -295,9 +298,11 @@ function buildUI(root: HTMLElement): {
     "btn-simulate",
     "sim-panel-hint",
     "btn-lesion-create",
+    "btn-lesion-report",
     "btn-lesion-show",
     "btn-lesion-download",
     "btn-lesion-load",
+    "btn-lesion-clear",
     "lesion-file-input",
     "lesion-panel-hint",
     "lesion-list",
@@ -434,6 +439,16 @@ function main() {
   const contrastSim = createContrastSim(anatomy, [ground, ring]);
   const lesionMgr = createLesionManager(anatomy);
   const lesionEditor = createLesionEditor(app as HTMLElement);
+  const reportImport = createReportImport(app as HTMLElement, (parsed) => {
+    lesionMgr.addRecords(
+      parsed.map((L) => ({
+        vesselId: L.vesselId,
+        t: L.t,
+        severity: L.severity,
+        lengthT: L.lengthT,
+      })),
+    );
+  });
   const viewportEl = document.getElementById("viewport") as HTMLElement;
 
   function syncLesionFlows() {
@@ -597,9 +612,11 @@ function main() {
   let seekDragging = false;
   let speedDragging = false;
   const btnLesionCreate = els["btn-lesion-create"] as HTMLButtonElement;
+  const btnLesionReport = els["btn-lesion-report"] as HTMLButtonElement;
   const btnLesionShow = els["btn-lesion-show"] as HTMLButtonElement;
   const btnLesionDownload = els["btn-lesion-download"] as HTMLButtonElement;
   const btnLesionLoad = els["btn-lesion-load"] as HTMLButtonElement;
+  const btnLesionClear = els["btn-lesion-clear"] as HTMLButtonElement;
   const lesionFileInput = els["lesion-file-input"] as HTMLInputElement;
   const lesionPanelHint = els["lesion-panel-hint"];
   const lesionListEl = els["lesion-list"];
@@ -615,6 +632,8 @@ function main() {
   const lesionFocusBackups = new Map<object, FocusBackup>();
   /** Newly placed lesion awaiting editor save; cancel removes it. */
   let pendingNewLesionId: string | null = null;
+  /** Lesion waiting for a click on the model to change vessel and position. */
+  let repositioningId: string | null = null;
 
   function setFluoroInvert(on: boolean) {
     fluoroInvert = on;
@@ -715,12 +734,17 @@ function main() {
     lesionListEl.innerHTML = "";
     btnLesionCreate.classList.toggle("active", lesionMgr.placing);
     btnLesionCreate.textContent = lesionMgr.placing ? "Click vessel…" : "Create lesion";
-    viewportEl.classList.toggle("placing-lesion", lesionMgr.placing);
-    lesionPanelHint.textContent = lesionMgr.placing
-      ? "Click a vessel on the model to place the lesion."
-      : lesionMgr.lesions.length
-        ? `${lesionMgr.lesions.length} lesion${lesionMgr.lesions.length === 1 ? "" : "s"} defined.`
-        : "Create a lesion, then click a vessel on the model.";
+    viewportEl.classList.toggle("placing-lesion", lesionMgr.placing || !!repositioningId);
+    if (lesionMgr.placing) {
+      lesionPanelHint.textContent = "Click a vessel on the model to place the lesion.";
+    } else if (repositioningId) {
+      lesionPanelHint.textContent = "Click a vessel to move this lesion. Esc cancels.";
+    } else if (lesionMgr.lesions.length) {
+      lesionPanelHint.textContent = `${lesionMgr.lesions.length} lesion${lesionMgr.lesions.length === 1 ? "" : "s"} defined.`;
+    } else {
+      lesionPanelHint.textContent = "Create a lesion, then click a vessel on the model.";
+    }
+    btnLesionClear.disabled = lesionMgr.lesions.length === 0;
 
     for (const L of lesionMgr.lesions) {
       const li = document.createElement("li");
@@ -736,6 +760,12 @@ function main() {
         <button type="button" class="lesion-list-main" data-id="${L.id}">
           <span class="lesion-list-name">${name}</span>
           <span class="lesion-list-meta">${seg} · ${mm} mm · ${pct}%${pct >= 99 ? " · occluded" : ""}</span>
+        </button>
+        <button type="button" class="lesion-list-move${L.id === repositioningId ? " is-active" : ""}" data-move="${L.id}" title="Reposition" aria-label="Reposition">
+          <svg viewBox="0 0 12 12" aria-hidden="true">
+            <circle cx="6" cy="6" r="2.15" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <path d="M6 0.7v2.1M6 9.2v2.1M0.7 6h2.1M9.2 6h2.1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+          </svg>
         </button>
         <button type="button" class="lesion-list-edit" data-edit="${L.id}" title="Edit">Edit</button>
         <button type="button" class="lesion-list-del" data-del="${L.id}" title="Delete">×</button>
@@ -902,7 +932,12 @@ function main() {
     setFluoroInvert(!fluoroInvert);
   });
 
+  btnLesionReport.addEventListener("click", () => {
+    if (lesionMgr.placing) lesionMgr.setPlacing(false);
+    reportImport.open();
+  });
   btnLesionCreate.addEventListener("click", () => {
+    repositioningId = null;
     if (lesionMgr.placing) {
       lesionMgr.setPlacing(false);
       return;
@@ -918,6 +953,7 @@ function main() {
   });
   btnLesionDownload.addEventListener("click", () => lesionMgr.download());
   btnLesionLoad.addEventListener("click", () => lesionFileInput.click());
+  btnLesionClear.addEventListener("click", () => lesionMgr.clear());
   lesionFileInput.addEventListener("change", async () => {
     const file = lesionFileInput.files?.[0];
     lesionFileInput.value = "";
@@ -946,7 +982,16 @@ function main() {
     }
     const edit = t.closest<HTMLElement>("[data-edit]");
     if (edit?.dataset.edit) {
+      repositioningId = null;
       void openLesionEditor(edit.dataset.edit, false);
+      return;
+    }
+    const move = t.closest<HTMLElement>("[data-move]");
+    if (move?.dataset.move) {
+      if (lesionMgr.placing) lesionMgr.setPlacing(false);
+      repositioningId = repositioningId === move.dataset.move ? null : move.dataset.move;
+      if (repositioningId) lesionMgr.select(repositioningId);
+      else syncLesionList();
       return;
     }
     const main = t.closest<HTMLElement>("[data-id]");
@@ -1171,6 +1216,16 @@ function main() {
     return { mesh: hits[0].object as THREE.Mesh, point: hits[0].point.clone() };
   }
 
+  function tryRepositionLesionFromClick(clientX: number, clientY: number) {
+    if (!repositioningId) return false;
+    const { mesh, point } = pickVesselHit(clientX, clientY);
+    if (!lesionMgr.moveFromClick(repositioningId, mesh, point)) return false;
+    repositioningId = null;
+    syncLesionList();
+    clearHover();
+    return true;
+  }
+
   function tryPlaceLesionFromClick(clientX: number, clientY: number) {
     if (!lesionMgr.placing) return false;
     const { mesh, point } = pickVesselHit(clientX, clientY);
@@ -1183,7 +1238,7 @@ function main() {
   }
 
   function tryEngageFromClick(clientX: number, clientY: number) {
-    if (lesionMgr.placing) return false;
+    if (lesionMgr.placing || repositioningId) return false;
     if (!contrastSim.active) return false;
     const { mesh, point } = pickVesselHit(clientX, clientY);
     const side = contrastSim.pickSide(raycaster.ray, mesh, point);
@@ -1250,6 +1305,7 @@ function main() {
     if (e.button !== 0) return;
     if (!isTapGesture(e.clientX, e.clientY)) return;
     if (tryPlaceLesionFromClick(e.clientX, e.clientY)) return;
+    if (tryRepositionLesionFromClick(e.clientX, e.clientY)) return;
     tryEngageFromClick(e.clientX, e.clientY);
   });
 
@@ -1287,8 +1343,10 @@ function main() {
       return;
     }
 
-    if (e.key === "Escape" && lesionMgr.placing) {
+    if (e.key === "Escape" && (lesionMgr.placing || repositioningId)) {
+      repositioningId = null;
       lesionMgr.setPlacing(false);
+      syncLesionList();
       return;
     }
 
