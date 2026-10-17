@@ -5,6 +5,7 @@ import {
   anglesFromCameraPosition,
   applyModelOrientation,
   cathCameraPosition,
+  cathCameraUp,
   formatAngulation,
   formatOblique,
   formatViewLabel,
@@ -14,11 +15,17 @@ import {
 } from "./cathAngles";
 import {
   createCoronaryAnatomy,
+  GRAFTS,
+  setGraftVisibility,
+  setHeartOpacity,
   setVesselGroupVisibility,
+  setVesselOpacity,
   VESSEL_CATEGORIES,
   VESSEL_GROUPS,
+  type GraftId,
   type VesselGroup,
 } from "./coronaryAnatomy";
+import { createCarmWindow, createOrientationBox } from "./sceneExtras";
 import { createContrastSim, type InjectionSide } from "./contrastSim";
 import { createLesionEditor } from "./lesionEditor";
 import { createReportImport } from "./reportImport";
@@ -85,6 +92,18 @@ function buildUI(root: HTMLElement): {
       </div>`;
   }).join("");
 
+  const graftToggles = GRAFTS.map(
+    (g) => `
+      <label class="vessel-toggle graft-toggle">
+        <input type="checkbox" data-graft="${g.id}" />
+        <span class="swatch" style="background:${g.color}"></span>
+        <span class="graft-copy">
+          <span>${g.label}</span>
+          <span class="graft-detail">${g.detail}</span>
+        </span>
+      </label>`,
+  ).join("");
+
   root.innerHTML = `
     <div id="viewport"></div>
     <div class="hud">
@@ -115,30 +134,28 @@ function buildUI(root: HTMLElement): {
           </div>
 
           <div class="control-group">
-            <div class="oblique-toggle">
-              <button type="button" id="btn-rao">RAO</button>
-              <button type="button" id="btn-lao" class="active">LAO</button>
-            </div>
-            <div class="slider-row">
-              <label for="oblique-slider"><span id="oblique-label">LAO</span></label>
-              <input id="oblique-slider" type="range" min="0" max="90" value="0" step="1" />
+            <div class="bipolar">
+              <div class="bipolar-ends">
+                <span>RAO</span>
+                <span>LAO</span>
+              </div>
+              <input id="oblique-slider" type="range" min="-90" max="90" value="0" step="1" aria-label="Oblique, RAO to LAO" />
               <div class="num-wrap">
-                <input id="oblique-input" type="number" min="0" max="90" step="1" value="0" aria-label="Oblique degrees" />
+                <input id="oblique-input" type="number" min="-90" max="90" step="1" value="0" aria-label="Oblique degrees" />
                 <span class="unit">°</span>
               </div>
             </div>
           </div>
 
           <div class="control-group">
-            <div class="oblique-toggle">
-              <button type="button" id="btn-cranial" class="active">Cranial</button>
-              <button type="button" id="btn-caudal">Caudal</button>
-            </div>
-            <div class="slider-row">
-              <label for="angulation-slider"><span id="angulation-label">Cranial</span></label>
-              <input id="angulation-slider" type="range" min="0" max="90" value="0" step="1" />
+            <div class="bipolar">
+              <div class="bipolar-ends">
+                <span>Caudal</span>
+                <span>Cranial</span>
+              </div>
+              <input id="angulation-slider" type="range" min="-90" max="90" value="0" step="1" aria-label="Angulation, caudal to cranial" />
               <div class="num-wrap">
-                <input id="angulation-input" type="number" min="0" max="90" step="1" value="0" aria-label="Angulation degrees" />
+                <input id="angulation-input" type="number" min="-90" max="90" step="1" value="0" aria-label="Angulation degrees" />
                 <span class="unit">°</span>
               </div>
             </div>
@@ -149,15 +166,11 @@ function buildUI(root: HTMLElement): {
             <div class="preset-grid" id="preset-grid"></div>
           </div>
 
-          <div class="action-row">
-            <button type="button" id="btn-heart">Heart</button>
-          </div>
-
           <div class="sim-panel">
             <h3>Contrast</h3>
             <button type="button" id="btn-simulate" class="btn-simulate">Simulate</button>
             <p class="sim-panel-hint" id="sim-panel-hint">
-              Press Simulate, then click LAD, LCx, LM, or RCA on the model.
+              Press Simulate, then click a coronary or a bypass graft.
             </p>
             <h3 class="lesion-heading">Lesions</h3>
             <div class="lesion-actions">
@@ -175,15 +188,58 @@ function buildUI(root: HTMLElement): {
             <ul class="lesion-list" id="lesion-list"></ul>
           </div>
 
-          <div class="legend">
-            <h3>Vessels</h3>
-            <div class="vessel-actions">
-              <button type="button" id="btn-vessels-all">All</button>
-              <button type="button" id="btn-vessels-none">None</button>
+          <div class="model-options">
+            <h3>Model</h3>
+            <div class="vessel-toggles">
+              <div class="heart-option">
+                <label class="vessel-toggle">
+                  <input type="checkbox" id="opt-heart" checked />
+                  <span>Heart</span>
+                </label>
+                <label class="heart-opacity">
+                  <span>Opacity</span>
+                  <input id="heart-opacity" type="range" min="0" max="100" value="10" step="1" aria-label="Heart opacity" />
+                  <span id="heart-opacity-readout">10%</span>
+                </label>
+              </div>
+              <label class="vessel-toggle">
+                <input type="checkbox" id="opt-carm" />
+                <span class="graft-copy">
+                  <span>Patient and detector</span>
+                  <span class="graft-detail">Drag to move, picture to rotate, corner to resize</span>
+                </span>
+              </label>
             </div>
-            <div class="vessel-toggles" id="vessel-toggles">
-              ${vesselToggles}
+
+              <div class="option-block">
+              <div class="option-block-head">
+                <h4>Coronaries</h4>
+                <div class="vessel-actions">
+                  <button type="button" id="btn-vessels-all">All</button>
+                  <button type="button" id="btn-vessels-none">None</button>
+                </div>
+              </div>
+              <label class="heart-opacity vessel-opacity">
+                <span>Opacity</span>
+                <input id="vessel-opacity" type="range" min="0" max="100" value="100" step="1" aria-label="Vessel opacity" />
+                <span id="vessel-opacity-readout">100%</span>
+              </label>
+              <div class="vessel-toggles" id="vessel-toggles">
+                ${vesselToggles}
+              </div>
             </div>
+
+            <div class="option-block">
+              <h4>Bypass grafts</h4>
+              <p class="option-note">Off until selected. Each one includes the vessel it comes from.</p>
+              <div class="vessel-toggles" id="graft-toggles">
+                ${graftToggles}
+              </div>
+            </div>
+
+            <p class="source-credit">
+              Heart geometry: BodyParts3D, © The Database Center for Life Science, CC BY 4.0.
+            </p>
           </div>
         </aside>
         <button type="button" class="panel-expand" id="btn-expand" title="Show panel" aria-label="Show panel">Panel</button>
@@ -257,9 +313,19 @@ function buildUI(root: HTMLElement): {
         </div>
       </div>
 
+      <div class="orient-cube" id="orient-cube" title="Patient orientation">
+        <canvas id="orient-canvas"></canvas>
+      </div>
+
+      <div class="carm-window" id="carm-window" hidden>
+        <div class="carm-window-bar" id="carm-window-bar">Patient and detector</div>
+        <canvas id="carm-canvas"></canvas>
+        <button type="button" class="carm-resize" id="carm-resize" aria-label="Resize window"></button>
+      </div>
+
       <p class="hint">
         Drag to rotate · Scroll to zoom · Arrows adjust angles
-        <kbd>R</kbd> reset AP · <kbd>P</kbd> panel · <kbd>S</kbd> simulate
+        <kbd>R</kbd> reset AP · <kbd>P</kbd> panel · <kbd>S</kbd> simulate · <kbd>D</kbd> detector
       </p>
 
       <div id="vessel-tooltip" class="vessel-tooltip" hidden>
@@ -283,18 +349,11 @@ function buildUI(root: HTMLElement): {
   const ids = [
     "oblique-readout",
     "angulation-readout",
-    "btn-rao",
-    "btn-lao",
-    "oblique-label",
     "oblique-slider",
     "oblique-input",
-    "btn-cranial",
-    "btn-caudal",
-    "angulation-label",
     "angulation-slider",
     "angulation-input",
     "preset-grid",
-    "btn-heart",
     "btn-simulate",
     "sim-panel-hint",
     "btn-lesion-create",
@@ -325,6 +384,18 @@ function buildUI(root: HTMLElement): {
     "oblique-mini",
     "angulation-mini",
     "vessel-tooltip",
+    "orient-canvas",
+    "carm-window",
+    "carm-window-bar",
+    "carm-canvas",
+    "carm-resize",
+    "heart-opacity",
+    "heart-opacity-readout",
+    "vessel-opacity",
+    "vessel-opacity-readout",
+    "opt-heart",
+    "opt-carm",
+    "graft-toggles",
   ] as const;
 
   const els: Record<string, HTMLElement> = {};
@@ -346,13 +417,15 @@ function main() {
   scene.fog = new THREE.FogExp2(0x0a1218, 0.04);
 
   const bgGeo = new THREE.SphereGeometry(40, 32, 16);
+  const bgUniforms = {
+    colorCenter: { value: new THREE.Color(0x12202a) },
+    colorEdge: { value: new THREE.Color(0x070c10) },
+    uGrain: { value: 0 },
+  };
   const bgMat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
-    uniforms: {
-      colorCenter: { value: new THREE.Color(0x12202a) },
-      colorEdge: { value: new THREE.Color(0x070c10) },
-    },
+    uniforms: bgUniforms,
     vertexShader: `
       varying vec3 vPos;
       void main() {
@@ -363,13 +436,17 @@ function main() {
     fragmentShader: `
       uniform vec3 colorCenter;
       uniform vec3 colorEdge;
+      uniform float uGrain;
       varying vec3 vPos;
       void main() {
         vec3 n = normalize(vPos);
         float h = n.y * 0.5 + 0.5;
         float glow = pow(max(0.0, 1.0 - length(n.xz)), 2.2) * 0.2;
         vec3 col = mix(colorEdge, colorCenter, h);
-        col += vec3(0.08, 0.18, 0.22) * glow;
+        col += vec3(0.08, 0.18, 0.22) * glow * (1.0 - step(0.001, uGrain));
+        float grain = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+        float grain2 = fract(sin(dot(floor(gl_FragCoord.xy * 0.45), vec2(39.346, 11.135))) * 24634.6345);
+        col += (grain + grain2 - 1.0) * uGrain;
         gl_FragColor = vec4(col, 1.0);
       }
     `,
@@ -390,8 +467,7 @@ function main() {
   canvasHost.appendChild(renderer.domElement);
 
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.08;
+  controls.enableDamping = false;
   controls.minDistance = 2.4;
   controls.maxDistance = 10;
   controls.target.copy(ISOCENTER);
@@ -404,39 +480,15 @@ function main() {
   fill.position.set(-3, 1, -2);
   scene.add(fill);
 
-  const ground = new THREE.Mesh(
-    new THREE.CircleGeometry(2.6, 64),
-    new THREE.MeshStandardMaterial({
-      color: 0x152028,
-      roughness: 0.9,
-      metalness: 0.1,
-      transparent: true,
-      opacity: 0.55,
-    }),
-  );
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.y = -1.55;
-  scene.add(ground);
-
-  const ring = new THREE.Mesh(
-    new THREE.RingGeometry(2.55, 2.62, 64),
-    new THREE.MeshBasicMaterial({
-      color: 0x3db8c8,
-      transparent: true,
-      opacity: 0.25,
-      side: THREE.DoubleSide,
-    }),
-  );
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.y = -1.54;
-  scene.add(ring);
-
   const anatomy = createCoronaryAnatomy();
   applyModelOrientation(anatomy);
   scene.add(anatomy);
+  const orientView = createOrientationBox(els["orient-canvas"] as HTMLCanvasElement);
+  orientView.resize();
+  const carmView = createCarmWindow(els["carm-canvas"] as HTMLCanvasElement);
   const heartShell = anatomy.getObjectByName("heartShell")!;
   const vessels = anatomy.getObjectByName("vessels");
-  const contrastSim = createContrastSim(anatomy, [ground, ring]);
+  const contrastSim = createContrastSim(anatomy);
   const lesionMgr = createLesionManager(anatomy);
   const lesionEditor = createLesionEditor(app as HTMLElement);
   const reportImport = createReportImport(app as HTMLElement, (parsed) => {
@@ -481,6 +533,7 @@ function main() {
     const k = 1 - Math.pow(1 - camLerp, Math.max(1, dt * 60));
     camera.position.lerp(camGoal, k);
     controls.target.lerp(lookGoal, k);
+    camera.up.copy(cathCameraUp(camera.position, controls.target));
     camera.lookAt(controls.target);
     if (camera.position.distanceTo(camGoal) < 1e-3) {
       camera.position.copy(camGoal);
@@ -491,27 +544,16 @@ function main() {
 
   function syncUIFromState() {
     state.syncing = true;
-    const laoMag = Math.abs(state.primary);
-    const cranMag = Math.abs(state.secondary);
-    const isLao = state.primary >= 0;
-    const isCranial = state.secondary >= 0;
-
-    (els["oblique-slider"] as HTMLInputElement).value = String(Math.round(laoMag));
-    (els["oblique-input"] as HTMLInputElement).value = String(Math.round(laoMag));
-    (els["angulation-slider"] as HTMLInputElement).value = String(Math.round(cranMag));
-    (els["angulation-input"] as HTMLInputElement).value = String(Math.round(cranMag));
-
-    els["oblique-label"].textContent = isLao ? "LAO" : "RAO";
-    els["angulation-label"].textContent = isCranial ? "Cranial" : "Caudal";
+    const primary = String(Math.round(state.primary));
+    const secondary = String(Math.round(state.secondary));
+    (els["oblique-slider"] as HTMLInputElement).value = primary;
+    (els["oblique-input"] as HTMLInputElement).value = primary;
+    (els["angulation-slider"] as HTMLInputElement).value = secondary;
+    (els["angulation-input"] as HTMLInputElement).value = secondary;
     els["oblique-readout"].textContent = formatOblique(state.primary);
     els["angulation-readout"].textContent = formatAngulation(state.secondary);
     els["oblique-mini"].textContent = formatOblique(state.primary);
     els["angulation-mini"].textContent = formatAngulation(state.secondary);
-
-    els["btn-lao"].classList.toggle("active", isLao);
-    els["btn-rao"].classList.toggle("active", !isLao);
-    els["btn-cranial"].classList.toggle("active", isCranial);
-    els["btn-caudal"].classList.toggle("active", !isCranial);
     state.syncing = false;
   }
 
@@ -530,68 +572,86 @@ function main() {
   applyCathCamera(false);
   camera.position.copy(camGoal);
   controls.target.copy(lookGoal);
+  camera.up.copy(cathCameraUp(camera.position, controls.target));
   camera.lookAt(controls.target);
   syncUIFromState();
 
-  els["btn-lao"].addEventListener("click", () => {
-    setAngles(Math.abs(state.primary), state.secondary);
-  });
-  els["btn-rao"].addEventListener("click", () => {
-    setAngles(-Math.abs(state.primary) || -1, state.secondary);
-  });
-  els["btn-cranial"].addEventListener("click", () => {
-    setAngles(state.primary, Math.abs(state.secondary));
-  });
-  els["btn-caudal"].addEventListener("click", () => {
-    setAngles(state.primary, -Math.abs(state.secondary) || -1);
-  });
-
-  const setObliqueMag = (mag: number) => {
-    const sign = state.primary >= 0 ? 1 : -1;
+  const setOblique = (degrees: number) => {
     setMode("cath");
-    setAngles(sign * clamp(mag, 0, 90), state.secondary, false);
+    setAngles(clamp(degrees, -90, 90), state.secondary, false);
   };
 
-  const setAngulationMag = (mag: number) => {
-    const sign = state.secondary >= 0 ? 1 : -1;
+  const setAngulation = (degrees: number) => {
     setMode("cath");
-    setAngles(state.primary, sign * clamp(mag, 0, 90), false);
+    setAngles(state.primary, clamp(degrees, -90, 90), false);
   };
 
   els["oblique-slider"].addEventListener("input", () => {
     if (state.syncing) return;
-    setObliqueMag(Number((els["oblique-slider"] as HTMLInputElement).value));
+    setOblique(Number((els["oblique-slider"] as HTMLInputElement).value));
   });
   els["oblique-input"].addEventListener("input", () => {
     if (state.syncing) return;
     const raw = (els["oblique-input"] as HTMLInputElement).value;
     if (raw === "" || raw === "-") return;
-    setObliqueMag(Number(raw));
+    setOblique(Number(raw));
   });
   els["oblique-input"].addEventListener("change", () => {
     if (state.syncing) return;
-    setObliqueMag(Number((els["oblique-input"] as HTMLInputElement).value) || 0);
+    setOblique(Number((els["oblique-input"] as HTMLInputElement).value) || 0);
   });
 
   els["angulation-slider"].addEventListener("input", () => {
     if (state.syncing) return;
-    setAngulationMag(Number((els["angulation-slider"] as HTMLInputElement).value));
+    setAngulation(Number((els["angulation-slider"] as HTMLInputElement).value));
   });
   els["angulation-input"].addEventListener("input", () => {
     if (state.syncing) return;
     const raw = (els["angulation-input"] as HTMLInputElement).value;
     if (raw === "" || raw === "-") return;
-    setAngulationMag(Number(raw));
+    setAngulation(Number(raw));
   });
   els["angulation-input"].addEventListener("change", () => {
     if (state.syncing) return;
-    setAngulationMag(Number((els["angulation-input"] as HTMLInputElement).value) || 0);
+    setAngulation(Number((els["angulation-input"] as HTMLInputElement).value) || 0);
   });
 
-  let heartVisible = true;
-  els["btn-heart"].addEventListener("click", () => {
-    heartVisible = !heartVisible;
-    heartShell.visible = heartVisible;
+  const heartBox = els["opt-heart"] as HTMLInputElement;
+  const heartOpacity = els["heart-opacity"] as HTMLInputElement;
+  const heartOpacityReadout = els["heart-opacity-readout"];
+  let heartOpacityMemory = 10;
+  let paintingHeart = false;
+  const paintHeart = (pct: number, remember = true) => {
+    if (paintingHeart) return;
+    paintingHeart = true;
+    const clamped = clamp(pct, 0, 100);
+    const shown = clamped > 0;
+    heartOpacity.value = String(Math.round(clamped));
+    heartOpacityReadout.textContent = `${Math.round(clamped)}%`;
+    setHeartOpacity(anatomy, clamped / 100);
+    heartShell.visible = shown;
+    heartBox.checked = shown;
+    if (shown && remember) heartOpacityMemory = Math.round(clamped);
+    paintingHeart = false;
+  };
+  heartBox.addEventListener("change", () => {
+    if (paintingHeart) return;
+    paintHeart(heartBox.checked ? heartOpacityMemory || 10 : 0);
+  });
+  heartOpacity.addEventListener("input", () => {
+    paintHeart(Number(heartOpacity.value) || 0);
+  });
+
+  const vesselOpacity = els["vessel-opacity"] as HTMLInputElement;
+  const vesselOpacityReadout = els["vessel-opacity-readout"];
+  const paintVessels = (pct: number) => {
+    const clamped = clamp(pct, 0, 100);
+    vesselOpacity.value = String(Math.round(clamped));
+    vesselOpacityReadout.textContent = `${Math.round(clamped)}%`;
+    setVesselOpacity(anatomy, clamped / 100);
+  };
+  vesselOpacity.addEventListener("input", () => {
+    paintVessels(Number(vesselOpacity.value) || 0);
   });
 
   const simBar = els["sim-bar"];
@@ -622,6 +682,9 @@ function main() {
   const lesionListEl = els["lesion-list"];
   let hoverEmissive = 0.08;
   let fluoroInvert = false;
+  /** Heart and coronary opacity to put back when leaving the inverted view. */
+  let opacityBeforeInvert: { heart: number; vessel: number } | null = null;
+  const INVERT_MODEL_OPACITY = 5;
   let lesionFocus = false;
   type FocusBackup = {
     opacity: number;
@@ -637,9 +700,30 @@ function main() {
 
   function setFluoroInvert(on: boolean) {
     fluoroInvert = on;
-    viewportEl.classList.toggle("fluoro-invert", on);
     btnBarInvert.classList.toggle("active", on);
     btnBarInvert.setAttribute("aria-pressed", on ? "true" : "false");
+    const field = on ? 0xd4dadc : 0x0a1218;
+    const center = on ? 0xdee4e6 : 0x12202a;
+    const edge = on ? 0xc5cccf : 0x070c10;
+    scene.background = new THREE.Color(field);
+    scene.fog = new THREE.FogExp2(field, on ? 0.006 : 0.04);
+    bgUniforms.colorCenter.value.set(center);
+    bgUniforms.colorEdge.value.set(edge);
+    bgUniforms.uGrain.value = on ? 0.055 : 0;
+    contrastSim.setInverted(on);
+    if (on) {
+      opacityBeforeInvert = {
+        heart: Number(heartOpacity.value) || 0,
+        vessel: Number(vesselOpacity.value) || 0,
+      };
+      paintHeart(INVERT_MODEL_OPACITY, false);
+      paintVessels(INVERT_MODEL_OPACITY);
+    } else if (opacityBeforeInvert) {
+      const previous = opacityBeforeInvert;
+      opacityBeforeInvert = null;
+      paintHeart(previous.heart, false);
+      paintVessels(previous.vessel);
+    }
   }
 
   function applyLesionFocus(on: boolean) {
@@ -669,7 +753,7 @@ function main() {
     btnLesionShow.textContent = on ? "Showing…" : "Show lesions";
     if (!on) return;
 
-    const dimTargets = [anatomy, ground, ring];
+    const dimTargets = [anatomy];
     for (const root of dimTargets) {
       root.traverse((obj) => {
         if (!(obj instanceof THREE.Mesh)) return;
@@ -727,6 +811,9 @@ function main() {
     if (side === "lcx") return "LCx";
     if (side === "right") return "Right coronary";
     if (side === "both") return "Both coronaries";
+    if (side === "lima") return "LIMA to LAD";
+    if (side === "svg-om") return "SVG to OM";
+    if (side === "svg-pda") return "SVG to PDA";
     return "Click a vessel on the model";
   }
 
@@ -852,7 +939,7 @@ function main() {
     if (!contrastSim.active) {
       simStatus.textContent = "Off";
       simPanelHint.textContent =
-        "Press Simulate, then click LAD, LCx, LM, or RCA on the model.";
+        "Press Simulate, then click a coronary or a bypass graft.";
       btnSimulate.textContent = "Simulate";
       btnSimulate.classList.remove("active");
       if (fluoroInvert) setFluoroInvert(false);
@@ -1130,7 +1217,98 @@ function main() {
   const panelShell = els["panel-shell"];
   function setPanelCollapsed(collapsed: boolean) {
     panelShell.classList.toggle("collapsed", collapsed);
+    document.documentElement.classList.toggle("panel-collapsed", collapsed);
   }
+
+  els["graft-toggles"].addEventListener("change", (e) => {
+    const input = (e.target as HTMLElement).closest("input[data-graft]") as HTMLInputElement | null;
+    const id = input?.dataset.graft as GraftId | undefined;
+    if (!input || !id) return;
+    setGraftVisibility(anatomy, id, input.checked);
+  });
+
+  const carmWindow = els["carm-window"];
+  (els["opt-carm"] as HTMLInputElement).addEventListener("change", () => {
+    const on = (els["opt-carm"] as HTMLInputElement).checked;
+    carmWindow.hidden = !on;
+    if (on) carmView.resize();
+  });
+
+  const carmBar = els["carm-window-bar"];
+  const carmCanvas = els["carm-canvas"] as HTMLCanvasElement;
+  const carmResize = els["carm-resize"];
+  let carmDrag: { dx: number; dy: number } | null = null;
+  let carmOrbit: { x: number; y: number } | null = null;
+  let carmSize: { x: number; y: number; w: number; h: number } | null = null;
+
+  function pinCarmTopLeft(): void {
+    const rect = carmWindow.getBoundingClientRect();
+    const parent = carmWindow.offsetParent as HTMLElement | null;
+    const bounds = parent?.getBoundingClientRect();
+    carmWindow.style.left = `${rect.left - (bounds?.left ?? 0)}px`;
+    carmWindow.style.top = `${rect.top - (bounds?.top ?? 0)}px`;
+    carmWindow.style.right = "auto";
+    carmWindow.style.bottom = "auto";
+    carmWindow.style.width = `${rect.width}px`;
+    carmWindow.style.height = `${rect.height}px`;
+  }
+
+  carmBar.addEventListener("pointerdown", (e) => {
+    pinCarmTopLeft();
+    const rect = carmWindow.getBoundingClientRect();
+    carmDrag = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+    carmBar.setPointerCapture(e.pointerId);
+  });
+  carmBar.addEventListener("pointermove", (e) => {
+    if (!carmDrag) return;
+    const parent = carmWindow.offsetParent as HTMLElement | null;
+    const bounds = parent?.getBoundingClientRect();
+    const maxX = (bounds?.width ?? window.innerWidth) - carmWindow.offsetWidth;
+    const maxY = (bounds?.height ?? window.innerHeight) - carmWindow.offsetHeight;
+    const x = clamp(e.clientX - (bounds?.left ?? 0) - carmDrag.dx, 8, Math.max(8, maxX - 8));
+    const y = clamp(e.clientY - (bounds?.top ?? 0) - carmDrag.dy, 8, Math.max(8, maxY - 8));
+    carmWindow.style.left = `${x}px`;
+    carmWindow.style.top = `${y}px`;
+  });
+  carmBar.addEventListener("pointerup", () => {
+    carmDrag = null;
+  });
+
+  carmCanvas.addEventListener("pointerdown", (e) => {
+    carmOrbit = { x: e.clientX, y: e.clientY };
+    carmCanvas.setPointerCapture(e.pointerId);
+  });
+  carmCanvas.addEventListener("pointermove", (e) => {
+    if (!carmOrbit) return;
+    carmView.orbit(e.clientX - carmOrbit.x, e.clientY - carmOrbit.y);
+    carmOrbit = { x: e.clientX, y: e.clientY };
+  });
+  carmCanvas.addEventListener("pointerup", () => {
+    carmOrbit = null;
+  });
+
+  carmResize.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    pinCarmTopLeft();
+    const rect = carmWindow.getBoundingClientRect();
+    carmSize = { x: e.clientX, y: e.clientY, w: rect.width, h: rect.height };
+    carmResize.setPointerCapture(e.pointerId);
+  });
+  carmResize.addEventListener("pointermove", (e) => {
+    if (!carmSize) return;
+    const parent = carmWindow.offsetParent as HTMLElement | null;
+    const bounds = parent?.getBoundingClientRect();
+    const maxW = (bounds?.width ?? window.innerWidth) - carmWindow.offsetLeft - 8;
+    const maxH = (bounds?.height ?? window.innerHeight) - carmWindow.offsetTop - 8;
+    const w = clamp(carmSize.w + (e.clientX - carmSize.x), 180, Math.max(180, maxW));
+    const h = clamp(carmSize.h + (e.clientY - carmSize.y), 120, Math.max(120, maxH));
+    carmWindow.style.width = `${w}px`;
+    carmWindow.style.height = `${h}px`;
+    carmView.resize();
+  });
+  carmResize.addEventListener("pointerup", () => {
+    carmSize = null;
+  });
   els["btn-collapse"].addEventListener("click", () => setPanelCollapsed(true));
   els["btn-expand"].addEventListener("click", () => setPanelCollapsed(false));
 
@@ -1177,22 +1355,6 @@ function main() {
     tooltip.style.top = `${y}px`;
   }
 
-  function collectVesselTargets(): THREE.Object3D[] {
-    const targets: THREE.Object3D[] = [];
-    vessels?.traverse((obj) => {
-      if (
-        obj instanceof THREE.Mesh &&
-        obj.visible &&
-        obj.userData.isVessel &&
-        !obj.userData.isDyeOverlay &&
-        !obj.userData.isLesionMesh
-      ) {
-        targets.push(obj);
-      }
-    });
-    return targets;
-  }
-
   function setRayFromClient(clientX: number, clientY: number) {
     const rect = renderer.domElement.getBoundingClientRect();
     pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
@@ -1200,10 +1362,68 @@ function main() {
     raycaster.setFromCamera(pointer, camera);
   }
 
-  function pickVessel(clientX: number, clientY: number): THREE.Mesh | null {
-    setRayFromClient(clientX, clientY);
-    const hits = raycaster.intersectObjects(collectVesselTargets(), false);
-    return hits.length ? (hits[0].object as THREE.Mesh) : null;
+  const pickNdc = new THREE.Vector3();
+  const pickWorld = new THREE.Vector3();
+  /** Screen radius so a thin artery still names itself when the cursor is on the heart around it. */
+  const PICK_PX = 24;
+  /** Stay on the current vessel until the cursor is clearly off it. */
+  const PICK_KEEP_PX = 36;
+
+  function vesselShown(obj: THREE.Object3D): boolean {
+    for (let cur: THREE.Object3D | null = obj; cur; cur = cur.parent) {
+      if (!cur.visible) return false;
+    }
+    return true;
+  }
+
+  function vesselCurve(mesh: THREE.Mesh): THREE.Curve<THREE.Vector3> | null {
+    const contrast = mesh.userData.contrast as { curve?: THREE.Curve<THREE.Vector3> } | undefined;
+    if (contrast?.curve) return contrast.curve;
+    const pick = mesh.userData.pickCurve as THREE.Curve<THREE.Vector3> | undefined;
+    return pick ?? null;
+  }
+
+  function collectPickVessels(): THREE.Mesh[] {
+    const targets: THREE.Mesh[] = [];
+    const consider = (obj: THREE.Object3D) => {
+      if (!(obj instanceof THREE.Mesh) || !vesselShown(obj)) return;
+      if (!obj.userData.isVessel || obj.userData.isDyeOverlay || obj.userData.isLesionMesh) return;
+      if (obj.material instanceof THREE.MeshStandardMaterial && obj.material.opacity < 0.04) return;
+      if (typeof obj.userData.vesselName !== "string" || !vesselCurve(obj)) return;
+      targets.push(obj);
+    };
+    vessels?.traverse(consider);
+    anatomy.getObjectByName("grafts")?.traverse(consider);
+    return targets;
+  }
+
+  function curveScreenHit(
+    mesh: THREE.Mesh,
+    rect: DOMRect,
+  ): { point: THREE.Vector3; px: number; depth: number } | null {
+    const curve = vesselCurve(mesh);
+    if (!curve) return null;
+    const length = Math.max(curve.getLength(), 1e-4);
+    const samples = Math.min(96, Math.max(28, Math.ceil(length / 0.04)));
+    let bestPx = Infinity;
+    let bestDepth = Infinity;
+    const point = new THREE.Vector3();
+    for (let i = 0; i <= samples; i++) {
+      pickWorld.copy(curve.getPointAt(i / samples));
+      mesh.localToWorld(pickWorld);
+      pickNdc.copy(pickWorld).project(camera);
+      if (pickNdc.z < -1 || pickNdc.z > 1) continue;
+      const dx = ((pickNdc.x - pointer.x) * rect.width) / 2;
+      const dy = ((pickNdc.y - pointer.y) * rect.height) / 2;
+      const px = Math.hypot(dx, dy);
+      if (px < bestPx) {
+        bestPx = px;
+        bestDepth = pickWorld.distanceToSquared(camera.position);
+        point.copy(pickWorld);
+      }
+    }
+    if (bestPx === Infinity) return null;
+    return { point, px: bestPx, depth: bestDepth };
   }
 
   function pickVesselHit(
@@ -1211,9 +1431,34 @@ function main() {
     clientY: number,
   ): { mesh: THREE.Mesh | null; point: THREE.Vector3 | null } {
     setRayFromClient(clientX, clientY);
-    const hits = raycaster.intersectObjects(collectVesselTargets(), false);
-    if (!hits.length) return { mesh: null, point: null };
-    return { mesh: hits[0].object as THREE.Mesh, point: hits[0].point.clone() };
+    const rect = renderer.domElement.getBoundingClientRect();
+    anatomy.updateWorldMatrix(true, true);
+    const hits: { mesh: THREE.Mesh; point: THREE.Vector3; px: number; depth: number }[] = [];
+    let kept: { mesh: THREE.Mesh; point: THREE.Vector3; px: number; depth: number } | null = null;
+    for (const mesh of collectPickVessels()) {
+      const hit = curveScreenHit(mesh, rect);
+      if (!hit) continue;
+      if (hit.px <= PICK_PX) hits.push({ mesh, ...hit });
+      if (mesh === hoverMesh && hit.px <= PICK_KEEP_PX) kept = { mesh, ...hit };
+    }
+    if (!hits.length) {
+      if (!kept) return { mesh: null, point: null };
+      return { mesh: kept.mesh, point: kept.point };
+    }
+    hits.sort((a, b) => a.px - b.px);
+    let chosen = hits[0];
+    for (const hit of hits) {
+      if (hit.px > chosen.px + 8) break;
+      if (hit.depth < chosen.depth) chosen = hit;
+    }
+    if (kept && kept.mesh !== chosen.mesh && kept.px <= chosen.px + 10) {
+      return { mesh: kept.mesh, point: kept.point };
+    }
+    return { mesh: chosen.mesh, point: chosen.point };
+  }
+
+  function pickVessel(clientX: number, clientY: number): THREE.Mesh | null {
+    return pickVesselHit(clientX, clientY).mesh;
   }
 
   function tryRepositionLesionFromClick(clientX: number, clientY: number) {
@@ -1263,7 +1508,7 @@ function main() {
       if (dx * dx + dy * dy > 25) pointerGestureMoved = true;
     }
 
-    if (isDragging || pointerGestureMoved) {
+    if (e.buttons & 1 || isDragging || pointerGestureMoved) {
       clearHover();
       return;
     }
@@ -1290,7 +1535,7 @@ function main() {
     }
     hoverTimer = window.setTimeout(() => {
       if (hoverMesh === hit) showTooltip(hit);
-    }, 250);
+    }, 40);
   });
 
   function isTapGesture(clientX: number, clientY: number): boolean {
@@ -1303,7 +1548,9 @@ function main() {
   // pointerup — do not gate on OrbitControls isDragging (it flips true on every press)
   renderer.domElement.addEventListener("pointerup", (e) => {
     if (e.button !== 0) return;
-    if (!isTapGesture(e.clientX, e.clientY)) return;
+    const tap = isTapGesture(e.clientX, e.clientY);
+    pointerGestureMoved = false;
+    if (!tap) return;
     if (tryPlaceLesionFromClick(e.clientX, e.clientY)) return;
     if (tryRepositionLesionFromClick(e.clientX, e.clientY)) return;
     tryEngageFromClick(e.clientX, e.clientY);
@@ -1326,6 +1573,12 @@ function main() {
     state.secondary = clamp(inferred.secondary, -90, 90);
     syncUIFromState();
   });
+
+  function toggleCheck(id: string) {
+    const input = els[id] as HTMLInputElement;
+    input.checked = !input.checked;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
 
   window.addEventListener("keydown", (e) => {
     const tag = (e.target as HTMLElement | null)?.tagName;
@@ -1361,6 +1614,12 @@ function main() {
       return;
     }
 
+    if (e.key === "d" || e.key === "D") {
+      e.preventDefault();
+      toggleCheck("opt-carm");
+      return;
+    }
+
     const step = e.shiftKey ? 5 : 2;
     let primary = state.primary;
     let secondary = state.secondary;
@@ -1389,6 +1648,8 @@ function main() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+    orientView.resize();
+    if (!carmWindow.hidden) carmView.resize();
   });
 
   let lastFrame = performance.now();
@@ -1405,7 +1666,10 @@ function main() {
     } else {
       controls.update();
     }
-    renderer.render(scene, camera);
+    const carmAngles = { primary: state.primary, secondary: state.secondary };
+    orientView.render(camera);
+    if (!carmWindow.hidden) carmView.render(carmAngles);
+    contrastSim.render(renderer, scene, camera);
   }
   animate();
 }

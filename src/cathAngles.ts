@@ -44,6 +44,36 @@ export function cathDirection(angles: CathAngles): THREE.Vector3 {
   ).normalize();
 }
 
+const _cathLook = new THREE.Vector3();
+const _cathHead = new THREE.Vector3();
+const _cathAnt = new THREE.Vector3();
+
+/**
+ * Screen-up for a cath camera. Head-up on ordinary views, and eases toward
+ * the patient's anterior at a pure cranial or caudal pole so the picture
+ * does not roll once the camera sits on the body axis.
+ */
+export function cathCameraUp(
+  cameraPos: THREE.Vector3,
+  target: THREE.Vector3,
+  out = new THREE.Vector3(),
+): THREE.Vector3 {
+  _cathLook.copy(target).sub(cameraPos);
+  if (_cathLook.lengthSq() < 1e-8) return out.set(0, 1, 0);
+  _cathLook.normalize();
+  _cathHead.set(0, 1, 0).addScaledVector(_cathLook, -_cathLook.y);
+  _cathAnt.set(0, 0, 1).addScaledVector(_cathLook, -_cathLook.z);
+  const headLen = _cathHead.length();
+  if (_cathAnt.lengthSq() < 1e-8) {
+    return headLen < 1e-6 ? out.set(0, 0, 1) : out.copy(_cathHead).multiplyScalar(1 / headLen);
+  }
+  _cathAnt.normalize();
+  if (headLen < 1e-5) return out.copy(_cathAnt);
+  _cathHead.multiplyScalar(1 / headLen);
+  const level = THREE.MathUtils.smoothstep(headLen, 0.12, 0.42);
+  return out.copy(_cathAnt).lerp(_cathHead, level).normalize();
+}
+
 /** Camera world position for cath angles (detector / viewing side). */
 export function cathCameraPosition(
   angles: CathAngles,
