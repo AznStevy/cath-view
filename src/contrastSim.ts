@@ -23,7 +23,15 @@ const DIM_HEART_OPACITY = 0.06;
 const DIM_FLOOR_OPACITY = 0.06;
 const DIM_EMISSIVE = 0.015;
 
-export type InjectionSide = "left" | "right" | "both" | "lad" | "lcx";
+export type InjectionSide =
+  | "left"
+  | "right"
+  | "both"
+  | "lad"
+  | "lcx"
+  | "lima"
+  | "svg-om"
+  | "svg-pda";
 
 /** Stenosis segment that slows / blocks contrast along a vessel. */
 export type LesionFlow = {
@@ -59,6 +67,18 @@ export type ContrastVessel = {
   indexCount: number;
   tubularSegments: number;
   radialSegments: number;
+  /**
+   * Fraction of the centerline to omit from the dye tube.
+   * The buried origin sits inside the parent lumen; drawing it stacks contrast.
+   */
+  dyeSkipT: number;
+  /** Stop the dye tube before a tip that is buried in another opacified vessel. */
+  dyeEndT: number;
+  /** Tube caliber the dye column should match. */
+  radiusStart: number;
+  radiusEnd: number;
+  taperHold: number;
+  taperPower: number | null;
 };
 
 type Phase = "fill" | "hold" | "wash" | "pause";
@@ -83,6 +103,8 @@ export type ContrastSim = {
    * also seal a branch takeoff when residual radius at that angle is ~0.
    */
   setLesionFlows(flows: LesionFlow[]): void;
+  /** Grey field and dark dye, the way an inverted fluoro image reads. */
+  setInverted(on: boolean): void;
   /**
    * Resolve click → injection target.
    * LAD / LCx (and their branches) are selective; LM = whole left;
@@ -93,6 +115,8 @@ export type ContrastSim = {
     hitMesh: THREE.Mesh | null,
     hitPoint: THREE.Vector3 | null,
   ): InjectionSide | null;
+  /** Draw the main view. Inverted dye is composited once so crossings do not stack. */
+  render(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera): void;
   update(dt: number): void;
   dispose(): void;
 };
@@ -147,7 +171,7 @@ type DyeOverlay = {
   geo: THREE.BufferGeometry;
   startCap: THREE.Mesh;
   endCap: THREE.Mesh;
-  mat: THREE.MeshStandardMaterial;
+  mat: THREE.MeshBasicMaterial;
   /** Opacity scale from parent lesions proximal to this vessel's takeoff. */
   uBaseAmt: { value: number };
   uLesionCount: { value: number };
@@ -231,7 +255,8 @@ export function createContrastSim(
       v.takeoffT = 0;
       continue;
     }
-    v.takeoffT = closestParamOnCurve(parent.curve, v.curve.getPointAt(0));
+    const takeoffAt = v.mesh.userData.takeoffPoint as THREE.Vector3 | undefined;
+    v.takeoffT = closestParamOnCurve(parent.curve, takeoffAt ?? v.curve.getPointAt(0));
   }
 
   const order = [...vessels].sort((a, b) => {
@@ -257,47 +282,100 @@ export function createContrastSim(
     v.startDelay = parent.startDelay + parent.length * v.takeoffT;
   }
 
+  const GRAFT_NATIVE: Record<string, string> = {
+    lima: "lad",
+    "svg-om": "om1",
+    "svg-pda": "pda",
+  };
+  const graftLinks = new Map<string, { graftId: string; nativeId: string; entryT: number }>();
+  for (const [graftId, nativeId] of Object.entries(GRAFT_NATIVE)) {
+    const graft = byId.get(graftId);
+    const native = byId.get(nativeId);
+    if (!graft || !native) continue;
+    graftLinks.set(graftId, {
+      graftId,
+      nativeId,
+      entryT: closestParamOnCurve(
+        native.curve,
+        (graft.mesh.userData.anastomosisPoint as THREE.Vector3 | undefined) ??
+          graft.curve.getPointAt(1),
+      ),
+    });
+  }
+
+  function currentGraft(): {
+    graft: ContrastVessel;
+    native: ContrastVessel;
+    entryT: number;
+  } | null {
+    if (!side) return null;
+    const link = graftLinks.get(side);
+    if (!link) return null;
+    const graft = byId.get(link.graftId);
+    const native = byId.get(link.nativeId);
+    if (!graft || !native) return null;
+    return { graft, native, entryT: link.entryT };
+  }
+
+  /** Distance from a graft ostium to the origin of this vessel, or null if it is not in the runoff. */
+  function graftDelay(v: ContrastVessel): number | null {
+    const run = currentGraft();
+    if (!run) return null;
+    if (v.id === run.graft.id) return 0;
+    if (v.id === run.native.id) return run.graft.length;
+    const chain: ContrastVessel[] = [];
+    let cur: ContrastVessel | undefined = v;
+    while (cur && cur.id !== run.native.id) {
+      chain.push(cur);
+      cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+    }
+    if (!cur) return null;
+    const child = chain[chain.length - 1];
+    if (!child || child.takeoffT < run.entryT - 0.015) return null;
+    let dist = run.graft.length + Math.max(0, child.takeoffT - run.entryT) * run.native.length;
+    for (let i = chain.length - 1; i >= 1; i--) {
+      const node = chain[i - 1];
+      const parent = chain[i];
+      dist += node.takeoffT * parent.length;
+    }
+    return dist;
+  }
+
   const leftOstLocal = byId.get("lm")?.curve.getPointAt(0).clone() ?? new THREE.Vector3();
   const rightOstLocal = byId.get("rca")?.curve.getPointAt(0).clone() ?? new THREE.Vector3();
 
-  const dyeMat = new THREE.MeshStandardMaterial({
+  const dyeMat = new THREE.MeshBasicMaterial({
     color: DYE_COLOR,
-    emissive: DYE_COLOR,
-    emissiveIntensity: 0.75,
-    roughness: 0.32,
-    metalness: 0.04,
     transparent: true,
-    opacity: 0.95,
-    depthWrite: true,
+    opacity: 1,
+    depthWrite: false,
+    depthTest: true,
     polygonOffset: true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
+    toneMapped: false,
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.MaxEquation,
+    blendSrc: THREE.OneFactor,
+    blendDst: THREE.OneFactor,
+    blendEquationAlpha: THREE.MaxEquation,
+    blendSrcAlpha: THREE.OneFactor,
+    blendDstAlpha: THREE.OneFactor,
   });
+  dyeMat.defines = { DYE_INVERT: 0 };
+  // Near-black. A mid grey stays lighter than the heart and coronaries on
+  // some channels, so it never covers them.
+  const INVERT_INK = new THREE.Vector3(0.02, 0.022, 0.025);
+  let inverted = false;
 
   const MAX_DYE_LESIONS = 8;
 
   function dyeBaseRadius(v: ContrastVessel, t: number): number {
-    const startCap = v.mesh.children.find(
-      (c) =>
-        c instanceof THREE.Mesh &&
-        c.geometry instanceof THREE.CircleGeometry &&
-        c.position.distanceTo(v.curve.getPointAt(0)) < 0.05,
-    ) as THREE.Mesh | undefined;
-    const endCap = v.mesh.children.find(
-      (c) =>
-        c instanceof THREE.Mesh &&
-        c.geometry instanceof THREE.CircleGeometry &&
-        c !== startCap,
-    ) as THREE.Mesh | undefined;
-    const r0 =
-      startCap?.geometry instanceof THREE.CircleGeometry
-        ? (startCap.geometry.parameters.radius ?? 0.04)
-        : 0.04;
-    const r1 =
-      endCap?.geometry instanceof THREE.CircleGeometry
-        ? (endCap.geometry.parameters.radius ?? r0 * 0.6)
-        : r0 * 0.6;
-    return THREE.MathUtils.lerp(r0, r1, THREE.MathUtils.clamp(t, 0, 1));
+    const hold = v.taperHold;
+    const span = 1 - hold;
+    const u = span <= 1e-6 || t <= hold ? 0 : (t - hold) / span;
+    const smooth = v.taperPower != null ? Math.pow(u, v.taperPower) : u * u * (3 - 2 * u);
+    return THREE.MathUtils.lerp(v.radiusStart, v.radiusEnd, smooth);
   }
 
   function sampleLesionProfile(profile: number[], angle: number): number {
@@ -363,7 +441,7 @@ export function createContrastSim(
       const p = v.curve.getPointAt(t);
       const N = frames.normals[i];
       const B = frames.binormals[i];
-      const rBase = dyeBaseRadius(v, t) * 0.92;
+      const rBase = dyeBaseRadius(v, t);
       const cum = cumAt[i];
 
       for (let j = 0; j <= radial; j++) {
@@ -405,7 +483,7 @@ export function createContrastSim(
   }
 
   function patchDyeLesionShader(
-    mat: THREE.MeshStandardMaterial,
+    mat: THREE.MeshBasicMaterial,
     uBaseAmt: { value: number },
     uLesionCount: { value: number },
     uLesionT0: { value: Float32Array },
@@ -464,12 +542,12 @@ uniform float uFlow;`,
           `float dyeMul = uBaseAmt;
 for (int i = 0; i < ${MAX_DYE_LESIONS}; i++) {
   if (float(i) >= uLesionCount) break;
-  // Smooth ramp through the lesion and a soft tail distal to it
-  float t0 = uLesionT0[i];
+  // The lumen itself stays opacified. Attenuation starts at the distal shoulder.
   float t1 = uLesionT1[i];
-  float soft = max(0.08, (t1 - t0) * 0.9 + 0.05);
+  float span = max(0.0, t1 - uLesionT0[i]);
+  float soft = max(0.08, span * 0.9 + 0.05);
   float blendEnd = min(1.0, t1 + soft);
-  float w = smoothstep(t0, blendEnd, vDyeAlong);
+  float w = smoothstep(t1, blendEnd, vDyeAlong);
   dyeMul *= mix(1.0, uLesionFac[i], w);
 }
 // Local age from true arrival (cumulative travel).
@@ -480,11 +558,13 @@ float localFade = clamp(1.0 - localAge / max(uDiffuse, 0.001), 0.0, 1.0);
 // bright after the rest of the branch has already diffused.
 float bolusFade = clamp(1.0 - uClock / max(uDiffuse, 0.001), 0.0, 1.0);
 dyeMul *= min(localFade, bolusFade);
-gl_FragColor.a *= dyeMul;
+// Bright dye maxes to white, so a crossing stays the stronger column.
+gl_FragColor.rgb = vec3(dyeMul);
+gl_FragColor.a = 1.0;
 #include <tonemapping_fragment>`,
         );
     };
-    mat.customProgramCacheKey = () => "dye-lesion-age-fade-v3";
+    mat.customProgramCacheKey = () => "dye-lesion-age-fade-v16";
   }
 
   /** How much contrast remains distal to a stenosis (0–1). */
@@ -506,6 +586,9 @@ gl_FragColor.a *= dyeMul;
     const uDiffuse = { value: DIFFUSION_SEC };
     const uFlow = { value: FLOW_UNITS_PER_SEC };
     const mat = dyeMat.clone();
+    // Material.clone() does not copy defines, so the tube would compile
+    // without DYE_INVERT and the white column would not draw.
+    mat.defines = { DYE_INVERT: 0 };
     patchDyeLesionShader(
       mat,
       uBaseAmt,
@@ -573,6 +656,47 @@ gl_FragColor.a *= dyeMul;
       uFlow,
     };
   });
+
+  /** Narrow the vessel wall to the residual lumen so the lesion doesn't sit as a collar. */
+  function reshapeVessel(v: ContrastVessel) {
+    const geo = v.mesh.geometry;
+    if (!(geo instanceof THREE.BufferGeometry)) return;
+    const pos = geo.getAttribute("position");
+    if (!(pos instanceof THREE.BufferAttribute)) return;
+    const tubular = v.tubularSegments;
+    const radial = v.radialSegments;
+    if (pos.count !== (tubular + 1) * (radial + 1)) return;
+    const lesions = flowsByVessel.get(v.id) ?? [];
+    const frames = v.curve.computeFrenetFrames(tubular, false);
+    const radialNormal = new THREE.Vector3();
+    let offset = 0;
+    for (let i = 0; i <= tubular; i++) {
+      const t = i / tubular;
+      const p = v.curve.getPointAt(t);
+      const N = frames.normals[i];
+      const B = frames.binormals[i];
+      const rBase = dyeBaseRadius(v, t);
+      for (let j = 0; j <= radial; j++) {
+        const angle = (j / radial) * Math.PI * 2;
+        const sin = Math.sin(angle);
+        const cos = -Math.cos(angle);
+        const radius = rBase * lumenScaleAt(lesions, t, angle);
+        radialNormal
+          .set(cos * N.x + sin * B.x, cos * N.y + sin * B.y, cos * N.z + sin * B.z)
+          .normalize();
+        pos.setXYZ(
+          offset,
+          p.x + radialNormal.x * radius,
+          p.y + radialNormal.y * radius,
+          p.z + radialNormal.z * radius,
+        );
+        offset++;
+      }
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+    geo.computeBoundingSphere();
+  }
 
   function rebuildDyeGeometries() {
     for (const o of overlays) {
@@ -774,7 +898,30 @@ gl_FragColor.a *= dyeMul;
 
   /** Inherited thinning from parent lesions that sit proximal to this takeoff. */
   function inheritedAmountFactor(v: ContrastVessel): number {
-    // Match opacification to the same Q-limit that slows distal fill
+    const run = currentGraft();
+    if (run && graftDelay(v) != null && v.id !== run.graft.id) {
+      // A stenosis in the graft limits everything past the anastomosis.
+      // A native lesion proximal to the anastomosis is bypassed.
+      let q = pathFlowFactor(run.graft, 1);
+      if (v.id !== run.native.id) {
+        const nativeLesions = flowsByVessel.get(run.native.id);
+        let cur: ContrastVessel | undefined = v;
+        let childOnNative: ContrastVessel | undefined;
+        let guard = 0;
+        while (cur && cur.id !== run.native.id && guard++ < 24) {
+          childOnNative = cur;
+          cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+        }
+        if (nativeLesions && childOnNative) {
+          for (const f of nativeLesions) {
+            if (f.t0 >= run.entryT - 0.02 && childOnNative.takeoffT >= f.t0 - 1e-4) {
+              q *= flowConductance(f);
+            }
+          }
+        }
+      }
+      return THREE.MathUtils.clamp(q, 0.05, 1);
+    }
     return THREE.MathUtils.clamp(pathFlowFactor(v, 0), 0.05, 1);
   }
 
@@ -800,7 +947,11 @@ gl_FragColor.a *= dyeMul;
     o.uEffLen.value = Math.max(1e-4, effectiveVesselLength(v));
     o.uDiffuse.value = DIFFUSION_SEC;
     o.uFlow.value = FLOW_UNITS_PER_SEC;
-    const own = flowsByVessel.get(v.id) ?? [];
+    const run = currentGraft();
+    const own = (flowsByVessel.get(v.id) ?? []).filter((f) => {
+      if (run && v.id === run.native.id && f.t0 < run.entryT - 0.02) return false;
+      return true;
+    });
     const sorted = [...own].sort((a, b) => a.t0 - b.t0);
     const n = Math.min(MAX_DYE_LESIONS, sorted.length);
     o.uLesionCount.value = n;
@@ -819,6 +970,7 @@ gl_FragColor.a *= dyeMul;
 
   function isEngaged(v: ContrastVessel): boolean {
     if (!side) return false;
+    if (currentGraft()) return graftDelay(v) != null;
     if (side === "both") return true;
     if (side === "left") {
       const t = vesselTarget(byId, v.id);
@@ -830,8 +982,43 @@ gl_FragColor.a *= dyeMul;
     return false;
   }
 
+  /** Effective length of the segment from t0 to t1, slowed by stenoses. */
+  function effectiveSpan(v: ContrastVessel, t0: number, t1: number): number {
+    if (t1 <= t0 + 1e-5) return 0;
+    const steps = 16;
+    let sum = 0;
+    for (let i = 0; i < steps; i++) {
+      const t = t0 + ((i + 0.5) / steps) * (t1 - t0);
+      sum += ((t1 - t0) / steps) * v.length * travelMul(v, t);
+    }
+    return sum;
+  }
+
   /** Ostium-relative delay in effective (stenosis-stretched) distance. */
   function effectiveStart(v: ContrastVessel): number {
+    const run = currentGraft();
+    if (run && graftDelay(v) != null) {
+      const graftEff = effectiveVesselLength(run.graft);
+      if (v.id === run.graft.id) return 0;
+      if (v.id === run.native.id) return graftEff;
+      const chain: ContrastVessel[] = [];
+      let cur: ContrastVessel | undefined = v;
+      while (cur && cur.id !== run.native.id) {
+        chain.push(cur);
+        cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+      }
+      const child = chain[chain.length - 1];
+      let dist = graftEff;
+      if (child) {
+        dist += effectiveSpan(run.native, run.entryT, child.takeoffT);
+        for (let i = chain.length - 1; i >= 1; i--) {
+          const node = chain[i - 1];
+          const parent = chain[i];
+          dist += effectiveSpan(parent, 0, node.takeoffT);
+        }
+      }
+      return dist;
+    }
     const phys = (() => {
       if (side === "lad") {
         const root = byId.get("lad");
@@ -872,6 +1059,36 @@ gl_FragColor.a *= dyeMul;
 
   /** Map effective inject distance → physical front t on this vessel. */
   function physicalFrontT(v: ContrastVessel, dist: number): number {
+    const run = currentGraft();
+    if (run && v.id === run.native.id) {
+      const from = run.entryT;
+      const arrived = dist - effectiveVesselLength(run.graft);
+      if (arrived <= 0) return from;
+      let cap = 1;
+      const own = flowsByVessel.get(v.id);
+      if (own) {
+        for (const f of own) {
+          if (f.residualArea < 0.02 && f.t0 >= from - 0.02) {
+            cap = Math.min(cap, Math.max(from, f.t0));
+          }
+        }
+      }
+      let spent = 0;
+      const steps = 48;
+      const span = Math.max(0, cap - from);
+      for (let i = 0; i < steps; i++) {
+        const tA = from + (span * i) / steps;
+        const tB = from + (span * (i + 1)) / steps;
+        const mid = (tA + tB) * 0.5;
+        const segEff = (tB - tA) * v.length * travelMul(v, mid);
+        if (spent + segEff >= arrived) {
+          const frac = (arrived - spent) / Math.max(segEff, 1e-8);
+          return Math.min(cap, tA + (tB - tA) * frac);
+        }
+        spent += segEff;
+      }
+      return cap;
+    }
     // Never opacify a branch before dye on the parent has reached its takeoff.
     if (v.parentId) {
       const parent = byId.get(v.parentId);
@@ -971,10 +1188,12 @@ gl_FragColor.a *= dyeMul;
       }
 
       // Tube end-disks at ostia / branch takeoffs read as bright circles in
-      // fluoro inject — hide them while dimmed (junction beads seal the joins).
+      // fluoro inject — hide them while dimmed. The branch beads stay, so the
+      // join remains closed when the heart is transparent.
       const isTubeCap =
         obj.geometry instanceof THREE.CircleGeometry &&
         !!(obj.parent && (obj.parent as THREE.Object3D).userData?.contrast);
+      if (obj.userData.isVessel && !isTubeCap) return;
       if (isTubeCap) {
         if (on) {
           if (!matBackups.has(obj)) {
@@ -998,7 +1217,10 @@ gl_FragColor.a *= dyeMul;
         if (on) {
           const isHeart =
             obj.parent?.name === "heartShell" || obj.name === "heartShell";
-          dimMaterial(m, isHeart ? DIM_HEART_OPACITY : DIM_VESSEL_OPACITY, {
+          // Keep a heart the user already made fainter than the inject dim.
+          const currentOpacity = "opacity" in m ? m.opacity : 1;
+          const heartTarget = Math.min(currentOpacity, DIM_HEART_OPACITY);
+          dimMaterial(m, isHeart ? heartTarget : DIM_VESSEL_OPACITY, {
             emissive: m instanceof THREE.MeshStandardMaterial,
           });
         } else {
@@ -1155,15 +1377,19 @@ gl_FragColor.a *= dyeMul;
       v.dye.time.value = simTime;
 
       const idxCount = o.geo.index?.count ?? v.indexCount;
-      const start = Math.floor((wash * idxCount) / 3) * 3;
-      const end = Math.floor((front * idxCount) / 3) * 3;
+      // Overlap the parent by a fraction of a segment so index rounding
+      // can't open a crack at the ostium.
+      const skipBias = v.dyeSkipT > 0 ? 1 / Math.max(8, v.tubularSegments) : 0;
+      const skipFrom = Math.max(0, v.dyeSkipT - skipBias);
+      const drawWash = wash >= v.dyeSkipT ? wash : Math.max(wash, skipFrom);
+      const drawFront = Math.min(front, v.dyeEndT);
+      const start = Math.floor((drawWash * idxCount) / 3) * 3;
+      const end = Math.floor((drawFront * idxCount) / 3) * 3;
       const count = Math.max(0, end - start);
       o.geo.setDrawRange(start, count);
       o.mesh.visible = count > 0 && show && v.mesh.visible;
 
-      // Along-tube age fade is in the shader (proximal → distal)
-      o.mat.opacity = 0.95;
-      o.mat.emissiveIntensity = 0.75;
+      o.mat.opacity = 1;
 
       // Never show dye end-disks — they flash as circles at every branch takeoff.
       o.startCap.visible = false;
@@ -1188,6 +1414,102 @@ gl_FragColor.a *= dyeMul;
       }
     }
     return null;
+  }
+
+  let coverageRT: THREE.WebGLRenderTarget | null = null;
+  const coverSize = new THREE.Vector2();
+  const savedClear = new THREE.Color();
+  const compositeScene = new THREE.Scene();
+  const compositeCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const coverMap = { value: null as THREE.Texture | null };
+  const compositeMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+    toneMapped: false,
+    blending: THREE.NormalBlending,
+    uniforms: {
+      tCover: coverMap,
+      uInk: { value: INVERT_INK },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = vec4(position.xy, 0.0, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D tCover;
+      uniform vec3 uInk;
+      varying vec2 vUv;
+      void main() {
+        float cover = texture2D(tCover, vUv).r;
+        if (cover < 0.004) discard;
+        gl_FragColor = vec4(uInk, cover);
+      }
+    `,
+  });
+  compositeScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), compositeMat));
+
+  function anyDyeVisible(): boolean {
+    for (const o of overlays) if (o.mesh.visible) return true;
+    return false;
+  }
+
+  /** Max coverage into a buffer, then one dark layer over the picture. */
+  function renderFrame(
+    renderer: THREE.WebGLRenderer,
+    scene: THREE.Scene,
+    camera: THREE.Camera,
+  ): void {
+    if (!inverted || !anyDyeVisible() || !coverageReady(renderer)) {
+      renderer.render(scene, camera);
+      return;
+    }
+    const rt = coverageRT!;
+    const prevTarget = renderer.getRenderTarget();
+    const prevAutoClear = renderer.autoClear;
+    const prevBg = scene.background;
+    const prevMask = camera.layers.mask;
+    renderer.getClearColor(savedClear);
+    const prevAlpha = renderer.getClearAlpha();
+    try {
+      scene.background = null;
+      camera.layers.set(1);
+      renderer.autoClear = true;
+      renderer.setRenderTarget(rt);
+      renderer.setClearColor(0x000000, 1);
+      renderer.clear(true, true, true);
+      renderer.render(scene, camera);
+    } finally {
+      camera.layers.mask = prevMask;
+      scene.background = prevBg;
+      renderer.setRenderTarget(prevTarget);
+      renderer.setClearColor(savedClear, prevAlpha);
+      renderer.autoClear = prevAutoClear;
+    }
+    renderer.render(scene, camera);
+    renderer.autoClear = false;
+    renderer.render(compositeScene, compositeCam);
+    renderer.autoClear = prevAutoClear;
+  }
+
+  function coverageReady(renderer: THREE.WebGLRenderer): boolean {
+    renderer.getDrawingBufferSize(coverSize);
+    const w = Math.max(1, coverSize.x);
+    const h = Math.max(1, coverSize.y);
+    if (coverageRT && coverageRT.width === w && coverageRT.height === h) return true;
+    coverageRT?.dispose();
+    coverageRT = new THREE.WebGLRenderTarget(w, h, {
+      depthBuffer: false,
+      stencilBuffer: false,
+      magFilter: THREE.LinearFilter,
+      minFilter: THREE.LinearFilter,
+    });
+    coverageRT.texture.colorSpace = THREE.NoColorSpace;
+    coverMap.value = coverageRT.texture;
+    return true;
   }
 
   const api: ContrastSim = {
@@ -1242,11 +1564,37 @@ gl_FragColor.a *= dyeMul;
     setLesionFlows(flows: LesionFlow[]) {
       lesionFlows = flows;
       rebuildFlowIndex();
+      for (const v of vessels) reshapeVessel(v);
       rebuildDyeGeometries();
       if (active && side) {
         recomputeMaxEnd();
         // New lesion meshes are created bright — re-apply inject hide
         setDimmed(true);
+      }
+    },
+    setInverted(on: boolean) {
+      inverted = on;
+      // Inverted dye is drawn into a coverage buffer (max, same as white) and
+      // composited once. Keeping it off the main camera layer stops that pass
+      // from also blending it onto the vessels.
+      const layer = on ? 1 : 0;
+      for (const o of overlays) {
+        o.mesh.layers.set(layer);
+        o.startCap.layers.set(layer);
+        o.endCap.layers.set(layer);
+        o.mat.defines = { DYE_INVERT: 0 };
+        o.mat.needsUpdate = true;
+        o.mat.color.set(DYE_COLOR);
+        o.mat.depthTest = !on;
+        o.mat.depthWrite = false;
+        o.mat.fog = !on;
+        o.mat.blending = THREE.CustomBlending;
+        o.mat.blendEquation = THREE.MaxEquation;
+        o.mat.blendEquationAlpha = THREE.MaxEquation;
+        o.mat.blendSrc = THREE.OneFactor;
+        o.mat.blendDst = THREE.OneFactor;
+        o.mat.blendSrcAlpha = THREE.OneFactor;
+        o.mat.blendDstAlpha = THREE.OneFactor;
       }
     },
     pickSide(ray, hitMesh, _hitPoint) {
@@ -1260,6 +1608,12 @@ gl_FragColor.a *= dyeMul;
 
       // Prefer an actual vessel / ostium hit over the between-ostia heuristic
       if (hitMesh && !hitMesh.userData.isDyeOverlay) {
+        if (hitMesh.userData.isGraft) {
+          const graftId = String(hitMesh.userData.graftId ?? hitMesh.userData.contrast?.id ?? "");
+          if (graftId === "lima" || graftId === "svg-om" || graftId === "svg-pda") {
+            return graftId;
+          }
+        }
         const id = resolveVesselId(hitMesh);
         if (id) {
           const t = vesselTarget(byId, id);
@@ -1318,6 +1672,9 @@ gl_FragColor.a *= dyeMul;
       if (dRight < 0.25 && dRight < dLeft) return "right";
 
       return null;
+    },
+    render(renderer, scene, camera) {
+      renderFrame(renderer, scene, camera);
     },
     update(dt: number) {
       if (!active) return;
@@ -1387,6 +1744,8 @@ gl_FragColor.a *= dyeMul;
         o.endCap.geometry.dispose();
       }
       dyeMat.dispose();
+      coverageRT?.dispose();
+      compositeMat.dispose();
     },
   };
 

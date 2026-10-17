@@ -112,28 +112,14 @@ function collectVessels(anatomy: THREE.Object3D): VesselIndex {
   return { vessels, byId };
 }
 
+/** Match the tapered tube, not a missing start cap (that fallback was the old fat caliber). */
 function vesselRadiusAt(v: ContrastVessel, t: number): number {
-  const startCap = v.mesh.children.find(
-    (c) =>
-      c instanceof THREE.Mesh &&
-      c.geometry instanceof THREE.CircleGeometry &&
-      c.position.distanceTo(v.curve.getPointAt(0)) < 0.05,
-  ) as THREE.Mesh | undefined;
-  const endCap = v.mesh.children.find(
-    (c) =>
-      c instanceof THREE.Mesh &&
-      c.geometry instanceof THREE.CircleGeometry &&
-      c !== startCap,
-  ) as THREE.Mesh | undefined;
-  const r0 =
-    startCap?.geometry instanceof THREE.CircleGeometry
-      ? (startCap.geometry.parameters.radius ?? 0.04)
-      : 0.04;
-  const r1 =
-    endCap?.geometry instanceof THREE.CircleGeometry
-      ? (endCap.geometry.parameters.radius ?? r0 * 0.6)
-      : r0 * 0.6;
-  return THREE.MathUtils.lerp(r0, r1, THREE.MathUtils.clamp(t, 0, 1));
+  const hold = v.taperHold ?? 0;
+  const span = 1 - hold;
+  const clamped = THREE.MathUtils.clamp(t, 0, 1);
+  const u = span <= 1e-6 || clamped <= hold ? 0 : (clamped - hold) / span;
+  const smooth = v.taperPower != null ? Math.pow(u, v.taperPower) : u * u * (3 - 2 * u);
+  return THREE.MathUtils.lerp(v.radiusStart, v.radiusEnd, smooth);
 }
 
 function sampleProfile(profile: number[], angle: number): number {
@@ -152,7 +138,7 @@ function createStenosisGeometry(
   curve: THREE.CatmullRomCurve3,
   tCenter: number,
   halfLen: number,
-  radiusBase: number,
+  radiusAt: (t: number) => number,
   profile: number[],
   segments = 18,
 ): THREE.BufferGeometry {
@@ -163,6 +149,7 @@ function createStenosisGeometry(
   const positions: number[] = [];
   const normals: number[] = [];
   const uvs: number[] = [];
+  const colors: number[] = [];
   const indices: number[] = [];
   const normal = new THREE.Vector3();
   const vertex = new THREE.Vector3();
@@ -185,7 +172,9 @@ function createStenosisGeometry(
       const cos = -Math.cos(angle);
       const residual = sampleProfile(profile, angle);
       const factor = THREE.MathUtils.lerp(1, Math.max(0.03, residual), pinch);
-      const radius = radiusBase * factor * 1.02;
+      // Flush with the vessel. The shoulders fade out so they don't form a lip.
+      const radius = radiusAt(t) * factor;
+      const fade = pinch * pinch;
 
       normal
         .set(cos * N.x + sin * B.x, cos * N.y + sin * B.y, cos * N.z + sin * B.z)
@@ -194,6 +183,7 @@ function createStenosisGeometry(
       positions.push(vertex.x, vertex.y, vertex.z);
       normals.push(normal.x, normal.y, normal.z);
       uvs.push(u, v);
+      colors.push(1, 1, 1, fade);
     }
   }
 
@@ -212,6 +202,7 @@ function createStenosisGeometry(
   geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   geo.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
   geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 4));
   return geo;
 }
 
@@ -315,12 +306,11 @@ export function createLesionManager(anatomy: THREE.Object3D): LesionManager {
     const v = byId.get(lesion.vesselId);
     if (!v) return;
 
-    const rBase = vesselRadiusAt(v, lesion.t);
     const geo = createStenosisGeometry(
       v.curve,
       lesion.t,
       lesion.lengthT,
-      rBase,
+      (t) => vesselRadiusAt(v, t),
       lesion.profile,
     );
     const selected = lesion.id === selectedId;
@@ -331,9 +321,10 @@ export function createLesionManager(anatomy: THREE.Object3D): LesionManager {
       emissiveIntensity: selected ? 0.45 : 0.22,
       roughness: 0.55,
       metalness: 0.08,
+      vertexColors: true,
       transparent: true,
       opacity: area < 0.02 ? 0.95 : 0.88,
-      depthWrite: true,
+      depthWrite: false,
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
