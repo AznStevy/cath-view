@@ -834,6 +834,16 @@ type HeartPartJson = {
   indices: number[];
 };
 
+const AORTA_MESH_IDS = new Set([
+  "aorta",
+  "arch",
+  "brachiocephalic",
+  "left-carotid",
+  "left-subclavian",
+  "right-carotid",
+  "right-subclavian",
+]);
+
 const HEART_PART_COLOR: Record<string, number> = {
   lv: 0xb14a40,
   rv: 0x94404a,
@@ -845,6 +855,9 @@ const HEART_PART_COLOR: Record<string, number> = {
 };
 
 let heartOpacity = 0.1;
+
+/** Premade BodyParts3D aorta, arch, and pulmonary trunk, instead of the drawn tubes. */
+const SHOW_PREMADE_GREAT_VESSELS = true;
 
 function applyHeartOpacity(root: THREE.Object3D): void {
   root.traverse((obj) => {
@@ -906,91 +919,158 @@ let heartJson: Promise<HeartPartJson[]> | null = null;
 
 function loadHeartParts(): Promise<HeartPartJson[]> {
   if (!heartJson) {
-    heartJson = fetch(`${import.meta.env.BASE_URL}heart/heart.json`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`Heart geometry failed to load (${res.status})`);
-        return res.json() as Promise<{ parts: HeartPartJson[] }>;
-      })
-      .then((data) => data.parts);
+    const base = import.meta.env.BASE_URL;
+    heartJson = Promise.all([
+      fetch(`${base}heart/heart.json`),
+      fetch(`${base}heart/arch-branches.json`),
+    ])
+      .then(async ([heartRes, branchRes]) => {
+        if (!heartRes.ok) throw new Error(`Heart geometry failed to load (${heartRes.status})`);
+        const heart = (await heartRes.json()) as { parts: HeartPartJson[] };
+        if (!branchRes.ok) return heart.parts;
+        const branches = (await branchRes.json()) as { parts: HeartPartJson[] };
+        return heart.parts.concat(branches.parts);
+      });
   }
   return heartJson;
 }
 
 function addHeartParts(group: THREE.Group, parts: HeartPartJson[]): void {
+  const chambers = new THREE.Group();
+  chambers.name = "anatomy-chambers";
+  const aortaMount = new THREE.Group();
+  aortaMount.name = "anatomy-aorta";
+  const pulmonary = new THREE.Group();
+  pulmonary.name = "anatomy-pa";
+
   for (const part of parts) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.Float32BufferAttribute(part.positions, 3));
     geo.setIndex(part.indices);
     if (part.id === "lv") openLvOutflow(geo);
     geo.computeVertexNormals();
-    const greatVessel = part.id === "aorta" || part.id === "arch" || part.id === "pa";
     const mesh = new THREE.Mesh(
       geo,
-      heartMaterial(HEART_PART_COLOR[part.id] ?? 0x8d403c, heartOpacity),
+      heartMaterial(HEART_PART_COLOR[part.id] ?? HEART_PART_COLOR.aorta, heartOpacity),
     );
-    mesh.name = greatVessel ? part.id : "myocardium";
     mesh.raycast = () => {};
-    group.add(mesh);
+    // BodyParts3D meshes already seated on these chambers, shown in place of the drawn tubes.
+    if (AORTA_MESH_IDS.has(part.id)) {
+      mesh.name = part.id;
+      aortaMount.add(mesh);
+      continue;
+    }
+    if (part.id === "pa") {
+      mesh.name = part.id;
+      pulmonary.add(mesh);
+      continue;
+    }
+    mesh.name = "myocardium";
+    chambers.add(mesh);
   }
-  addAortaBridge(group);
-  addPulmonaryArteries(group);
+  if (!SHOW_PREMADE_GREAT_VESSELS) {
+    addAortaBridge(aortaMount);
+    addPulmonaryArtery(pulmonary);
+  }
+  group.add(chambers, aortaMount, pulmonary);
   applyHeartOpacity(group);
 }
 
-/**
- * The source pulmonary artery is already one trunk and two branches.
- * Vertices that enter the aorta are eased out behind it so the vessel stays whole.
- */
-function clearPulmonaryArtery(mesh: THREE.Mesh): void {
-  const geo = mesh.geometry;
-  const pos = geo.getAttribute("position");
-  if (!(pos instanceof THREE.BufferAttribute)) return;
-  const curve = aortaCurve();
-  const samples: { p: THREE.Vector3; r: number }[] = [];
-  for (let i = 0; i <= 80; i++) {
-    const t = i / 80;
-    const p = curve.getPointAt(t);
-    if (p.y < 0.15) continue;
-    if (p.y > 1.15) break;
-    samples.push({ p, r: aortaRadiusAt(t) });
-  }
-  const v = new THREE.Vector3();
-  const away = new THREE.Vector3();
-  for (let i = 0; i < pos.count; i++) {
-    v.fromBufferAttribute(pos, i);
-    let best = Infinity;
-    let center = samples[0]?.p;
-    let radius = 0.19;
-    for (const s of samples) {
-      const d = v.distanceTo(s.p);
-      if (d < best) {
-        best = d;
-        center = s.p;
-        radius = s.r;
-      }
-    }
-    if (!center) continue;
-    const limit = radius + 0.045;
-    if (best >= limit) continue;
-    away.set(v.x - center.x + 0.08, v.y - center.y, v.z - center.z - 0.14);
-    if (away.lengthSq() < 1e-6) away.set(0.25, 0, -0.2);
-    away.normalize();
-    v.copy(center).addScaledVector(away, limit);
-    pos.setXYZ(i, v.x, v.y, v.z);
-  }
-  pos.needsUpdate = true;
-  geo.computeVertexNormals();
+export type AnatomyPart = "chambers" | "aorta" | "pa";
+
+/** Show or hide chambers, the aorta, or the pulmonary artery. */
+export function setAnatomyPartVisible(
+  root: THREE.Object3D,
+  part: AnatomyPart,
+  visible: boolean,
+): void {
+  const shell = root.getObjectByName("heartShell") ?? root;
+  const node = shell.getObjectByName(`anatomy-${part}`);
+  if (node) node.visible = visible;
 }
 
-function addPulmonaryArteries(group: THREE.Group): void {
-  const source = group.getObjectByName("pa");
-  if (source instanceof THREE.Mesh) clearPulmonaryArtery(source);
+function addGreatVesselTube(
+  group: THREE.Group,
+  name: string,
+  points: Pt[],
+  radius: number,
+  radiusEnd: number,
+  mat: THREE.Material,
+  caps: { start: boolean; end: boolean },
+): void {
+  const curve = makeCurve(points);
+  const mesh = new THREE.Mesh(
+    createTaperedTubeGeometry(curve, 64, radius, radiusEnd, 18),
+    mat,
+  );
+  mesh.name = name;
+  mesh.raycast = () => {};
+  group.add(mesh);
+  const capAt = (t: number, capRadius: number) => {
+    const disk = new THREE.Mesh(new THREE.CircleGeometry(capRadius, 14), mat);
+    disk.name = name;
+    const tangent = curve.getTangentAt(t).normalize();
+    if (t < 0.5) tangent.negate();
+    disk.position.copy(curve.getPointAt(t));
+    disk.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), tangent);
+    disk.raycast = () => {};
+    group.add(disk);
+  };
+  if (caps.start) capAt(0, radius);
+  if (caps.end) capAt(1, radiusEnd);
+}
+
+/**
+ * A straight trunk leaves the right-ventricular outflow and then bends into
+ * the left pulmonary artery. The right branch stays on the patient's left
+ * until it is behind the ascending aorta, then runs a short way toward the
+ * right lung and stops short of the superior vena cava.
+ */
+function addPulmonaryArtery(group: THREE.Group): void {
+  const mat = heartMaterial(HEART_PART_COLOR.pa, heartOpacity);
+  const mainPts: Pt[] = [
+    [0.412, 0.263, 0.594],
+    [0.385, 0.369, 0.562],
+    [0.355, 0.486, 0.526],
+    [0.325, 0.603, 0.49],
+    [0.3, 0.7, 0.46],
+    [0.285, 0.759, 0.442],
+    [0.38, 0.78, 0.3],
+    [0.5, 0.77, 0.16],
+    [0.64, 0.72, 0.02],
+    [0.76, 0.67, -0.06],
+  ];
+  addGreatVesselTube(group, "pa-trunk", mainPts, 0.15, 0.09, mat, {
+    start: false,
+    end: true,
+  });
+  addGreatVesselTube(
+    group,
+    "pa-right",
+    [
+      [0.335, 0.564, 0.502],
+      [0.325, 0.63, 0.4],
+      [0.34, 0.66, 0.18],
+      [0.345, 0.68, -0.05],
+      [0.3, 0.68, -0.23],
+      [0.14, 0.67, -0.27],
+      [0.0, 0.66, -0.27],
+      [-0.16, 0.65, -0.27],
+      [-0.32, 0.64, -0.26],
+    ],
+    0.11,
+    0.085,
+    mat,
+    { start: false, end: true },
+  );
 }
 
 /**
  * The valve sits at the base of the left ventricle. A short outflow mouth
  * meets the cavity there; the tube does not run down into the chamber.
- * Then a straight ascending aorta and a semicircular arch. Ostia sit on the sinus.
+ * Then a straight ascending aorta and a compact arch that turns posterior
+ * over the pulmonary artery and descends behind the left atrium.
+ * Ostia sit on the sinus.
  */
 const AORTA_SINUS_INDEX = 2;
 const AORTA_CENTERLINE: Pt[] = [
@@ -1002,20 +1082,20 @@ const AORTA_CENTERLINE: Pt[] = [
   [-0.035, 0.44, 0.094],
   [-0.054, 0.6, 0.112],
   [-0.072, 0.76, 0.131],
-  [-0.041, 1.014, 0.077],
-  [-0.013, 1.196, -0.044],
-  [0.016, 1.317, -0.226],
-  [0.045, 1.36, -0.44],
-  [0.074, 1.317, -0.654],
-  [0.103, 1.196, -0.836],
-  [0.131, 1.014, -0.957],
-  [0.16, 0.8, -1.0],
+  [-0.09, 0.94, 0.07],
+  [-0.07, 1.08, -0.02],
+  [-0.02, 1.15, -0.16],
+  [0.06, 1.12, -0.32],
+  [0.12, 1.0, -0.46],
+  [0.15, 0.82, -0.58],
+  [0.16, 0.58, -0.74],
+  [0.15, 0.36, -0.9],
 ];
 
-/** Radius at each centerline control. Annulus, mild sinus, then the ascending tube. */
+/** Radius at each centerline control. Annulus, mild sinus, ascending tube, then a slightly narrower arch. */
 const AORTA_RADII = [
-  0.15, 0.145, 0.17, 0.18, 0.19, 0.19, 0.19, 0.19, 0.19, 0.188, 0.186, 0.184, 0.182, 0.18, 0.178,
-  0.176,
+  0.15, 0.145, 0.17, 0.18, 0.19, 0.19, 0.19, 0.19, 0.185, 0.178, 0.172, 0.166, 0.16, 0.156, 0.152,
+  0.148,
 ];
 
 function aortaCurve(): THREE.CatmullRomCurve3 {
@@ -1139,6 +1219,7 @@ function addAortaBridge(group: THREE.Group): void {
   cap.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), curve.getTangentAt(1).normalize());
   cap.raycast = () => {};
   group.add(mesh, cap);
+  addArchBranches(group);
 }
 
 /** Put the coronary ostia on the sinus wall, with a short straight takeoff. */
@@ -1225,60 +1306,171 @@ function createHeartShell(): THREE.Group {
   return group;
 }
 
-/** Left subclavian off the superior arch; the internal mammary leaves its underside. */
-function subclavianCourse(): Pt[] {
-  const curve = aortaCurve();
-  const t = closestT(curve, [0.07, 1.32, -0.55]);
-  const center = curve.getPointAt(t);
-  const tangent = curve.getTangentAt(t).normalize();
-  const out = new THREE.Vector3(1, 0.35, -0.15);
-  out.addScaledVector(tangent, -out.dot(tangent)).normalize();
-  const localRadius = aortaRadiusAt(t);
-  const origin = center.clone().addScaledVector(out, localRadius * 0.9);
-  const mid = origin.clone().addScaledVector(out, 0.2);
-  const end = origin.clone().addScaledVector(out, 0.38);
-  const pt = (v: THREE.Vector3): Pt => [v.x, v.y, v.z];
-  return [pt(origin), pt(mid), pt(end)];
+type ArchBranch = {
+  name: string;
+  points: Pt[];
+  radius: number;
+  radiusEnd: number;
+  cap: boolean;
+};
+
+function pointOf(v: THREE.Vector3): Pt {
+  return [v.x, v.y, v.z];
 }
 
-const [SUBCLAV_OST, SUBCLAV_IMA, SUBCLAV_END] = subclavianCourse();
+/** On the outer wall, then straight outward, so the branch meets the aorta flush. */
+function archTakeoff(t: number, prefer: THREE.Vector3, branchRadius: number): THREE.Vector3[] {
+  const curve = aortaCurve();
+  const tangent = curve.getTangentAt(t).normalize();
+  const outward = prefer.clone().addScaledVector(tangent, -prefer.dot(tangent));
+  if (outward.lengthSq() < 1e-8) outward.copy(prefer);
+  outward.normalize();
+  const center = curve.getPointAt(t);
+  const wall = aortaRadiusAt(t);
+  const seat = center.clone().addScaledVector(outward, wall - branchRadius * 0.15);
+  const clear = center.clone().addScaledVector(outward, wall + branchRadius + 0.02);
+  const free = clear.clone().addScaledVector(outward, 0.05);
+  return [seat, clear, free];
+}
 
-function createSubclavianMesh(): THREE.Group {
-  const points: Pt[] = [SUBCLAV_OST, SUBCLAV_IMA, SUBCLAV_END];
+/** Shallow bite at the end of a parent, then immediately along the daughter. */
+function daughterMouth(
+  end: THREE.Vector3,
+  dir: THREE.Vector3,
+  radius: number,
+): [THREE.Vector3, THREE.Vector3] {
+  const n = dir.clone().normalize();
+  return [end.clone().addScaledVector(n, -radius * 0.2), end.clone().addScaledVector(n, radius * 0.85)];
+}
+
+/** Underside of the left subclavian once that vessel is outside the aorta. */
+function imaOnSubclavian(points: Pt[], subRadius: number): { buried: THREE.Vector3; exit: THREE.Vector3 } {
   const curve = makeCurve(points);
-  const radius = 0.05;
-  const color = 0xc15a50;
-  const mat = new THREE.MeshStandardMaterial({
-    color,
-    roughness: 0.45,
-    metalness: 0.05,
-    emissive: color,
-    emissiveIntensity: 0.05,
-  });
-  const geo = createTaperedTubeGeometry(curve, 24, radius, radius * 0.86, 10);
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.name = "vessel-subclavian";
-  const tag = (obj: THREE.Object3D) => {
-    obj.userData.isVessel = true;
-    obj.userData.isGraft = true;
-    obj.userData.graftId = "lima";
-    obj.userData.vesselName = "Left subclavian";
-    obj.userData.vesselDetail = "Arch branch; the internal mammary leaves its underside";
+  const aorta = aortaCurve();
+  let along = 0.55;
+  for (let i = 8; i <= 36; i++) {
+    const t = i / 40;
+    const p = curve.getPointAt(t);
+    let clearOfAorta = true;
+    for (let j = 0; j <= 48; j++) {
+      const u = j / 48;
+      if (p.distanceTo(aorta.getPointAt(u)) < aortaRadiusAt(u) + 0.06) {
+        clearOfAorta = false;
+        break;
+      }
+    }
+    if (!clearOfAorta) continue;
+    along = Math.min(0.78, t + 0.1);
+    break;
+  }
+  const center = curve.getPointAt(along);
+  const tangent = curve.getTangentAt(along).normalize();
+  const outward = new THREE.Vector3(0, -1, 0.75).addScaledVector(tangent, -new THREE.Vector3(0, -1, 0.75).dot(tangent));
+  if (outward.y > -0.15) outward.y -= 0.6;
+  if (outward.lengthSq() < 1e-8) outward.set(0, -1, 0.4);
+  outward.normalize();
+  return {
+    buried: center.clone().addScaledVector(outward, subRadius * 0.25),
+    exit: center.clone().addScaledVector(outward, subRadius * 1.4),
   };
-  tag(mesh);
-  mesh.userData.pickCurve = curve;
-  const end = curve.getPointAt(1);
-  const cap = (at: THREE.Vector3, tangent: THREE.Vector3, capRadius: number) => {
-    const disk = new THREE.Mesh(new THREE.CircleGeometry(capRadius, 12), mat);
-    disk.position.copy(at);
-    disk.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), tangent);
-    tag(disk);
-    return disk;
+}
+
+/**
+ * Brachiocephalic, left common carotid, and left subclavian leave the superior arch,
+ * in that order. The internal mammary leaves the underside of the left subclavian.
+ */
+function buildArchBranches(): { branches: ArchBranch[]; imaBuried: Pt; imaExit: Pt } {
+  const bctRadius = 0.058;
+  const [bctSeat, bctClear, bctFree] = archTakeoff(0.47, new THREE.Vector3(-0.85, 0.55, 0.25), bctRadius);
+  const bctDir = new THREE.Vector3(-0.72, 0.68, 0.18).normalize();
+  const bctEnd = bctFree.clone().addScaledVector(bctDir, 0.36);
+  const brachiocephalic: Pt[] = [
+    pointOf(bctSeat),
+    pointOf(bctClear),
+    pointOf(bctFree),
+    pointOf(bctFree.clone().addScaledVector(bctDir, 0.12)),
+    pointOf(bctFree.clone().addScaledVector(bctDir, 0.24)),
+    pointOf(bctEnd),
+  ];
+  const carotidDir = new THREE.Vector3(-0.18, 0.97, 0.12).normalize();
+  const [carotidSeat, carotidClear] = daughterMouth(bctEnd, carotidDir, 0.046);
+  const rightCarotid: Pt[] = [
+    pointOf(carotidSeat),
+    pointOf(carotidClear),
+    pointOf(carotidClear.clone().add(new THREE.Vector3(-0.03, 0.12, 0.02))),
+    pointOf(carotidClear.clone().add(new THREE.Vector3(-0.05, 0.24, 0.035))),
+    pointOf(carotidClear.clone().add(new THREE.Vector3(-0.07, 0.36, 0.045))),
+  ];
+  const rightSubDir = new THREE.Vector3(-0.92, 0.28, -0.16).normalize();
+  const [rightSubSeat, rightSubClear] = daughterMouth(bctEnd, rightSubDir, 0.048);
+  const rightSubclavian: Pt[] = [
+    pointOf(rightSubSeat),
+    pointOf(rightSubClear),
+    pointOf(rightSubClear.clone().add(new THREE.Vector3(-0.1, 0.03, -0.02))),
+    pointOf(rightSubClear.clone().add(new THREE.Vector3(-0.2, 0.04, -0.04))),
+    pointOf(rightSubClear.clone().add(new THREE.Vector3(-0.32, 0.02, -0.06))),
+  ];
+
+  const [lccSeat, lccClear, lccFree] = archTakeoff(0.55, new THREE.Vector3(0.15, 1, 0.05), 0.038);
+  const leftCarotid: Pt[] = [
+    pointOf(lccSeat),
+    pointOf(lccClear),
+    pointOf(lccFree),
+    pointOf(lccFree.clone().add(new THREE.Vector3(0.02, 0.14, 0.02))),
+    pointOf(lccFree.clone().add(new THREE.Vector3(0.04, 0.28, 0.035))),
+    pointOf(lccFree.clone().add(new THREE.Vector3(0.06, 0.42, 0.045))),
+  ];
+
+  const subRadius = 0.048;
+  const [subSeat, subClear, subFree] = archTakeoff(0.62, new THREE.Vector3(0.95, 0.4, -0.1), subRadius);
+  const leftSubclavian: Pt[] = [
+    pointOf(subSeat),
+    pointOf(subClear),
+    pointOf(subFree),
+    pointOf(subFree.clone().add(new THREE.Vector3(0.12, 0.1, -0.02))),
+    pointOf(subFree.clone().add(new THREE.Vector3(0.28, 0.16, -0.06))),
+    pointOf(subFree.clone().add(new THREE.Vector3(0.5, 0.1, -0.03))),
+    pointOf(subFree.clone().add(new THREE.Vector3(0.72, 0.0, 0.03))),
+  ];
+
+  const ima = imaOnSubclavian(leftSubclavian, 0.044);
+  const imaBuried = ima.buried;
+  const imaExit = ima.exit;
+
+  return {
+    branches: [
+      { name: "arch-brachiocephalic", points: brachiocephalic, radius: 0.058, radiusEnd: 0.052, cap: false },
+      { name: "arch-right-carotid", points: rightCarotid, radius: 0.046, radiusEnd: 0.028, cap: true },
+      { name: "arch-right-subclavian", points: rightSubclavian, radius: 0.048, radiusEnd: 0.032, cap: true },
+      { name: "arch-left-carotid", points: leftCarotid, radius: 0.038, radiusEnd: 0.03, cap: true },
+      { name: "arch-left-subclavian", points: leftSubclavian, radius: 0.048, radiusEnd: 0.038, cap: true },
+    ],
+    imaBuried: pointOf(imaBuried),
+    imaExit: pointOf(imaExit),
   };
-  const group = new THREE.Group();
-  group.name = "subclavian";
-  group.add(mesh, cap(end, curve.getTangentAt(1).normalize(), radius * 0.86));
-  return group;
+}
+
+const ARCH_BRANCHES = buildArchBranches();
+
+function addArchBranches(group: THREE.Group): void {
+  const mat = heartMaterial(HEART_PART_COLOR.aorta, heartOpacity);
+  for (const branch of ARCH_BRANCHES.branches) {
+    const curve = makeCurve(branch.points);
+    const mesh = new THREE.Mesh(
+      createTaperedTubeGeometry(curve, 48, branch.radius, branch.radiusEnd, 16),
+      mat,
+    );
+    mesh.name = branch.name;
+    mesh.raycast = () => {};
+    group.add(mesh);
+    if (!branch.cap) continue;
+    const cap = new THREE.Mesh(new THREE.CircleGeometry(branch.radiusEnd, 12), mat);
+    cap.name = branch.name;
+    cap.position.copy(curve.getPointAt(1));
+    cap.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), curve.getTangentAt(1).normalize());
+    cap.raycast = () => {};
+    group.add(cap);
+  }
 }
 
 function createGraftMesh(
@@ -1350,30 +1542,27 @@ function createGrafts(): THREE.Group {
     GraftId,
     (typeof GRAFTS)[number]
   >;
-  const limaTakeoff: Pt = [
-    SUBCLAV_OST[0] + (SUBCLAV_END[0] - SUBCLAV_OST[0]) * 0.42,
-    SUBCLAV_OST[1] + (SUBCLAV_END[1] - SUBCLAV_OST[1]) * 0.42,
-    SUBCLAV_OST[2] + (SUBCLAV_END[2] - SUBCLAV_OST[2]) * 0.42,
-  ];
+  // LIMA leaves the underside of the left subclavian, then the anterior chest wall.
+  // The OM vein graft leaves the front of the ascending aorta and crosses above
+  // the pulmonary trunk so the course stays outside that vessel.
   const lima = createGraftMesh(
     "lima",
     byId.lima.label,
     byId.lima.detail,
     0xd07060,
     [
-      limaTakeoff,
-      [limaTakeoff[0] + 0.02, limaTakeoff[1] - 0.1, limaTakeoff[2] + 0.16],
-      [0.55, 0.95, 1.22],
-      [0.7, 0.45, 1.24],
-      [0.76, 0.05, 1.2],
-      [0.76, -0.15, 1.05],
+      [0.56, 2.0, -0.3],
+      [0.53, 1.9, -0.26],
+      [0.56, 1.62, 0.05],
+      [0.62, 1.15, 0.55],
+      [0.66, 0.62, 0.98],
+      [0.7, 0.15, 1.08],
+      [0.73, -0.12, 0.96],
       LAD_MID,
     ],
     0.015,
     0.011,
   );
-  lima.add(createSubclavianMesh());
-  // Courses sit outside the chambers and the pulmonary artery, and meet the target vessel at the end.
   group.add(
     lima,
     createGraftMesh(
@@ -1382,31 +1571,13 @@ function createGrafts(): THREE.Group {
       byId["svg-om"].detail,
       0xd4c48a,
       [
-        [0.05, 1.071, 0.219],
-        [0.075, 1.092, 0.262],
-        [0.132, 1.071, 0.346],
-        [0.185, 1.011, 0.417],
-        [0.237, 0.948, 0.487],
-        [0.288, 0.892, 0.563],
-        [0.337, 0.849, 0.648],
-        [0.384, 0.81, 0.737],
-        [0.434, 0.766, 0.821],
-        [0.491, 0.708, 0.891],
-        [0.549, 0.638, 0.947],
-        [0.609, 0.561, 0.992],
-        [0.672, 0.479, 1.019],
-        [0.74, 0.396, 1.014],
-        [0.803, 0.322, 0.97],
-        [0.86, 0.257, 0.906],
-        [0.913, 0.198, 0.834],
-        [0.966, 0.145, 0.757],
-        [1.02, 0.1, 0.676],
-        [1.072, 0.062, 0.59],
-        [1.116, 0.028, 0.498],
-        [1.14, -0.001, 0.398],
-        [1.125, -0.012, 0.293],
-        [1.083, -0.015, 0.194],
-        [1.011, -0.041, 0.123],
+        [-0.15, 0.6, 0.32],
+        [-0.18, 0.66, 0.48],
+        [-0.28, 0.88, 0.66],
+        [-0.04, 1.08, 0.74],
+        [0.42, 1.0, 0.7],
+        [0.74, 0.5, 0.42],
+        [0.9, 0.16, 0.24],
         OM1_MID,
       ],
       0.018,
@@ -1418,9 +1589,8 @@ function createGrafts(): THREE.Group {
       byId["svg-pda"].detail,
       0xcbb892,
       [
-        [-0.181, 0.547, 0.223],
-        [-0.241, 0.537, 0.272],
-        [-0.331, 0.498, 0.393],
+        [-0.352, 0.553, 0.259],
+        [-0.345, 0.5, 0.286],
         [-0.404, 0.479, 0.529],
         [-0.479, 0.38, 0.62],
         [-0.609, 0.297, 0.609],

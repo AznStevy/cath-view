@@ -16,9 +16,11 @@ import {
 import {
   createCoronaryAnatomy,
   GRAFTS,
+  setAnatomyPartVisible,
   setGraftVisibility,
   setHeartOpacity,
   setVesselGroupVisibility,
+  type AnatomyPart,
   setVesselOpacity,
   VESSEL_CATEGORIES,
   VESSEL_GROUPS,
@@ -35,6 +37,17 @@ import {
   segmentLabel,
   severityPct,
 } from "./lesions";
+
+const MAP_ZONES = [
+  { name: "RAO cranial", detail: "LCx and obtuse marginals", primary: -28, secondary: 32, rx: 18, ry: 14 },
+  { name: "LAO cranial", detail: "LAD and diagonals", primary: 34, secondary: 32, rx: 16, ry: 14 },
+  { name: "AP cranial", detail: "Proximal LAD", primary: 0, secondary: 14, rx: 8, ry: 7 },
+  { name: "RAO caudal", detail: "LCx and left main", primary: -30, secondary: -30, rx: 16, ry: 13 },
+  { name: "LAO caudal", detail: "Left main bifurcation", primary: 40, secondary: -28, rx: 16, ry: 13 },
+  { name: "Lateral", detail: "Mid LAD", primary: 86, secondary: 0, rx: 6, ry: 38 },
+] as const;
+
+const MAP_PLOT = { left: 42, right: 228, top: 16, bottom: 168, width: 240, height: 200 };
 
 type ViewMode = "cath" | "orbit";
 
@@ -59,6 +72,7 @@ function buildUI(root: HTMLElement): {
   canvasHost: HTMLElement;
   els: Record<string, HTMLElement>;
 } {
+  const sectionChevron = `<svg class="section-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.2 4.2 L6 8 L9.8 4.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const vesselToggles = VESSEL_CATEGORIES.map((cat) => {
     const showChildren = cat.groups.length > 1;
     const items = showChildren
@@ -79,11 +93,18 @@ function buildUI(root: HTMLElement): {
         } hidden aria-hidden="true" />`;
     return `
       <div class="vessel-category" data-category="${cat.id}">
-        <label class="vessel-category-toggle">
-          <input type="checkbox" data-category="${cat.id}" checked />
-          <span class="swatch" style="background:${cat.color}"></span>
-          <span>${cat.label}</span>
-        </label>
+        <div class="vessel-category-head">
+          <label class="vessel-category-toggle">
+            <input type="checkbox" data-category="${cat.id}" checked />
+            <span class="swatch" style="background:${cat.color}"></span>
+            <span>${cat.label}</span>
+          </label>
+          ${
+            showChildren
+              ? `<button type="button" class="section-chevron-btn" aria-expanded="true" aria-label="Collapse ${cat.label}">${sectionChevron}</button>`
+              : ""
+          }
+        </div>
         ${
           showChildren
             ? `<div class="vessel-category-items">${items}</div>`
@@ -190,34 +211,60 @@ function buildUI(root: HTMLElement): {
 
           <div class="model-options">
             <h3>Model</h3>
-            <div class="vessel-toggles">
-              <div class="heart-option">
+            <div class="option-block anatomy-block">
+              <button type="button" class="section-toggle" aria-expanded="true">
+                <h4>Anatomy</h4>
+                ${sectionChevron}
+              </button>
+              <div class="section-body">
+              <label class="heart-opacity">
+                <span>Opacity</span>
+                <input id="heart-opacity" type="range" min="0" max="100" value="10" step="1" aria-label="Anatomy opacity" />
+                <span id="heart-opacity-readout">10%</span>
+              </label>
+              <div class="vessel-toggles">
                 <label class="vessel-toggle">
-                  <input type="checkbox" id="opt-heart" checked />
-                  <span>Heart</span>
+                  <input type="checkbox" id="opt-chambers" checked />
+                  <span class="swatch" style="background:#b14a40"></span>
+                  <span>Chambers</span>
                 </label>
-                <label class="heart-opacity">
-                  <span>Opacity</span>
-                  <input id="heart-opacity" type="range" min="0" max="100" value="10" step="1" aria-label="Heart opacity" />
-                  <span id="heart-opacity-readout">10%</span>
+                <label class="vessel-toggle">
+                  <input type="checkbox" id="opt-aorta" checked />
+                  <span class="swatch" style="background:#c15a50"></span>
+                  <span>Aorta</span>
+                </label>
+                <label class="vessel-toggle">
+                  <input type="checkbox" id="opt-pa" checked />
+                  <span class="swatch" style="background:#6e4c58"></span>
+                  <span>Pulmonary artery</span>
                 </label>
               </div>
-              <label class="vessel-toggle">
-                <input type="checkbox" id="opt-carm" />
-                <span class="graft-copy">
-                  <span>Patient and detector</span>
-                  <span class="graft-detail">Drag to move, picture to rotate, corner to resize</span>
-                </span>
-              </label>
+              </div>
             </div>
+            <label class="vessel-toggle">
+              <input type="checkbox" id="opt-carm" />
+              <span class="graft-copy">
+                <span>Patient and detector</span>
+                <span class="graft-detail">Drag to move, picture to rotate, corner to resize</span>
+              </span>
+            </label>
+            <label class="vessel-toggle">
+              <input type="checkbox" id="opt-map" />
+              <span class="graft-copy">
+                <span>Angulation map</span>
+                <span class="graft-detail">Working views. Click the chart or a segment to move the C-arm</span>
+              </span>
+            </label>
 
-              <div class="option-block">
-              <div class="option-block-head">
+            <div class="option-block">
+              <button type="button" class="section-toggle" aria-expanded="true">
                 <h4>Coronaries</h4>
-                <div class="vessel-actions">
-                  <button type="button" id="btn-vessels-all">All</button>
-                  <button type="button" id="btn-vessels-none">None</button>
-                </div>
+                ${sectionChevron}
+              </button>
+              <div class="section-body">
+              <div class="vessel-actions">
+                <button type="button" id="btn-vessels-all">All</button>
+                <button type="button" id="btn-vessels-none">None</button>
               </div>
               <label class="heart-opacity vessel-opacity">
                 <span>Opacity</span>
@@ -227,13 +274,19 @@ function buildUI(root: HTMLElement): {
               <div class="vessel-toggles" id="vessel-toggles">
                 ${vesselToggles}
               </div>
+              </div>
             </div>
 
             <div class="option-block">
-              <h4>Bypass grafts</h4>
-              <p class="option-note">Off until selected. Each one includes the vessel it comes from.</p>
+              <button type="button" class="section-toggle" aria-expanded="true">
+                <h4>Bypass grafts</h4>
+                ${sectionChevron}
+              </button>
+              <div class="section-body">
+              <p class="option-note">Off until selected.</p>
               <div class="vessel-toggles" id="graft-toggles">
                 ${graftToggles}
+              </div>
               </div>
             </div>
 
@@ -323,6 +376,50 @@ function buildUI(root: HTMLElement): {
         <button type="button" class="carm-resize" id="carm-resize" aria-label="Resize window"></button>
       </div>
 
+      <div class="map-window" id="map-window" hidden>
+        <div class="carm-window-bar" id="map-window-bar">Angulation map</div>
+        <div class="map-body">
+          <div class="map-side">
+            <div class="map-angles">
+              <div id="map-oblique">AP</div>
+              <div id="map-cranial">0°</div>
+            </div>
+            <div class="map-details">
+              <div class="map-details-label">Details</div>
+              <button type="button" class="map-detail-toggle" aria-expanded="false">
+                <span>Current view</span>
+                ${sectionChevron}
+              </button>
+              <div class="map-detail-body" id="map-current" hidden>
+                <p id="map-current-text"></p>
+              </div>
+              <button type="button" class="map-detail-toggle" aria-expanded="false">
+                <span>Segments</span>
+                ${sectionChevron}
+              </button>
+              <div class="map-detail-body" id="map-segments" hidden>
+                ${MAP_ZONES.map(
+                  (z) => `
+                <button type="button" class="map-zone" data-primary="${z.primary}" data-secondary="${z.secondary}">
+                  <span>${z.name}</span>
+                  <span class="map-zone-detail">${z.detail}</span>
+                </button>`,
+                ).join("")}
+              </div>
+            </div>
+          </div>
+          <svg id="map-chart" class="map-chart" viewBox="0 0 ${MAP_PLOT.width} ${MAP_PLOT.height}">
+            <g id="map-grid"></g>
+            <g id="map-zones"></g>
+            <g id="map-marker" pointer-events="none">
+              <line x1="-8" y1="0" x2="8" y2="0" stroke="#e6b23c" stroke-width="2.4" stroke-linecap="round" />
+              <line x1="0" y1="-8" x2="0" y2="8" stroke="#e6b23c" stroke-width="2.4" stroke-linecap="round" />
+            </g>
+          </svg>
+        </div>
+        <button type="button" class="carm-resize" id="map-resize" aria-label="Resize window"></button>
+      </div>
+
       <p class="hint">
         Drag to rotate · Scroll to zoom · Arrows adjust angles
         <kbd>R</kbd> reset AP · <kbd>P</kbd> panel · <kbd>S</kbd> simulate · <kbd>D</kbd> detector
@@ -393,9 +490,21 @@ function buildUI(root: HTMLElement): {
     "heart-opacity-readout",
     "vessel-opacity",
     "vessel-opacity-readout",
-    "opt-heart",
+    "opt-chambers",
+    "opt-aorta",
+    "opt-pa",
     "opt-carm",
+    "opt-map",
     "graft-toggles",
+    "map-window",
+    "map-window-bar",
+    "map-resize",
+    "map-chart",
+    "map-marker",
+    "map-oblique",
+    "map-cranial",
+    "map-current-text",
+    "map-segments",
   ] as const;
 
   const els: Record<string, HTMLElement> = {};
@@ -486,7 +595,7 @@ function main() {
   const orientView = createOrientationBox(els["orient-canvas"] as HTMLCanvasElement);
   orientView.resize();
   const carmView = createCarmWindow(els["carm-canvas"] as HTMLCanvasElement);
-  const heartShell = anatomy.getObjectByName("heartShell")!;
+  const anatomyParts = ["chambers", "aorta", "pa"] as const satisfies readonly AnatomyPart[];
   const vessels = anatomy.getObjectByName("vessels");
   const contrastSim = createContrastSim(anatomy);
   const lesionMgr = createLesionManager(anatomy);
@@ -554,6 +663,7 @@ function main() {
     els["angulation-readout"].textContent = formatAngulation(state.secondary);
     els["oblique-mini"].textContent = formatOblique(state.primary);
     els["angulation-mini"].textContent = formatAngulation(state.secondary);
+    updateMap();
     state.syncing = false;
   }
 
@@ -616,28 +726,24 @@ function main() {
     setAngulation(Number((els["angulation-input"] as HTMLInputElement).value) || 0);
   });
 
-  const heartBox = els["opt-heart"] as HTMLInputElement;
   const heartOpacity = els["heart-opacity"] as HTMLInputElement;
   const heartOpacityReadout = els["heart-opacity-readout"];
-  let heartOpacityMemory = 10;
   let paintingHeart = false;
-  const paintHeart = (pct: number, remember = true) => {
+  const paintHeart = (pct: number) => {
     if (paintingHeart) return;
     paintingHeart = true;
     const clamped = clamp(pct, 0, 100);
-    const shown = clamped > 0;
     heartOpacity.value = String(Math.round(clamped));
     heartOpacityReadout.textContent = `${Math.round(clamped)}%`;
     setHeartOpacity(anatomy, clamped / 100);
-    heartShell.visible = shown;
-    heartBox.checked = shown;
-    if (shown && remember) heartOpacityMemory = Math.round(clamped);
     paintingHeart = false;
   };
-  heartBox.addEventListener("change", () => {
-    if (paintingHeart) return;
-    paintHeart(heartBox.checked ? heartOpacityMemory || 10 : 0);
-  });
+  for (const part of anatomyParts) {
+    const box = els[`opt-${part}`] as HTMLInputElement;
+    box.addEventListener("change", () => {
+      setAnatomyPartVisible(anatomy, part, box.checked);
+    });
+  }
   heartOpacity.addEventListener("input", () => {
     paintHeart(Number(heartOpacity.value) || 0);
   });
@@ -716,12 +822,12 @@ function main() {
         heart: Number(heartOpacity.value) || 0,
         vessel: Number(vesselOpacity.value) || 0,
       };
-      paintHeart(INVERT_MODEL_OPACITY, false);
+      paintHeart(INVERT_MODEL_OPACITY);
       paintVessels(INVERT_MODEL_OPACITY);
     } else if (opacityBeforeInvert) {
       const previous = opacityBeforeInvert;
       opacityBeforeInvert = null;
-      paintHeart(previous.heart, false);
+      paintHeart(previous.heart);
       paintVessels(previous.vessel);
     }
   }
@@ -1309,6 +1415,232 @@ function main() {
   carmResize.addEventListener("pointerup", () => {
     carmSize = null;
   });
+
+  panelShell.querySelector("#panel")?.addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest(".section-toggle, .section-chevron-btn");
+    if (!(btn instanceof HTMLElement)) return;
+    const open = btn.getAttribute("aria-expanded") !== "false";
+    btn.setAttribute("aria-expanded", open ? "false" : "true");
+    btn.closest(".option-block, .vessel-category")?.classList.toggle("is-collapsed", open);
+  });
+
+  const mapWindow = els["map-window"];
+  (els["opt-map"] as HTMLInputElement).addEventListener("change", () => {
+    mapWindow.hidden = !(els["opt-map"] as HTMLInputElement).checked;
+  });
+
+  function mapXY(primary: number, secondary: number): [number, number] {
+    const x =
+      MAP_PLOT.left + ((primary + 90) / 180) * (MAP_PLOT.right - MAP_PLOT.left);
+    const y =
+      MAP_PLOT.top + ((90 - secondary) / 180) * (MAP_PLOT.bottom - MAP_PLOT.top);
+    return [x, y];
+  }
+
+  function anglesFromChart(clientX: number, clientY: number): { primary: number; secondary: number } {
+    const svg = els["map-chart"] as unknown as SVGSVGElement;
+    const rect = svg.getBoundingClientRect();
+    const x = ((clientX - rect.left) / rect.width) * MAP_PLOT.width;
+    const y = ((clientY - rect.top) / rect.height) * MAP_PLOT.height;
+    const primary = ((x - MAP_PLOT.left) / (MAP_PLOT.right - MAP_PLOT.left)) * 180 - 90;
+    const secondary = 90 - ((y - MAP_PLOT.top) / (MAP_PLOT.bottom - MAP_PLOT.top)) * 180;
+    return { primary, secondary };
+  }
+
+  function drawMapChart(): void {
+    const NS = "http://www.w3.org/2000/svg";
+    const grid = els["map-chart"].querySelector("#map-grid")!;
+    const zones = els["map-chart"].querySelector("#map-zones")!;
+    const add = (parent: Element, name: string, attrs: Record<string, string>) => {
+      const el = document.createElementNS(NS, name);
+      for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, value);
+      parent.appendChild(el);
+      return el;
+    };
+    const plotW = MAP_PLOT.right - MAP_PLOT.left;
+    const plotH = MAP_PLOT.bottom - MAP_PLOT.top;
+    for (const primary of [-90, -60, -30, 0, 30, 60, 90]) {
+      const [x] = mapXY(primary, 0);
+      add(grid, "line", {
+        x1: String(x),
+        x2: String(x),
+        y1: String(MAP_PLOT.top),
+        y2: String(MAP_PLOT.bottom),
+        stroke: "rgba(255,255,255,0.16)",
+        "stroke-width": primary === 0 ? "1.1" : "0.7",
+      });
+    }
+    for (const secondary of [90, 45, 30, 15, 0, -15, -30, -45, -90]) {
+      const [, y] = mapXY(0, secondary);
+      add(grid, "line", {
+        x1: String(MAP_PLOT.left),
+        x2: String(MAP_PLOT.right),
+        y1: String(y),
+        y2: String(y),
+        stroke: "rgba(255,255,255,0.16)",
+        "stroke-width": secondary === 0 ? "1.1" : "0.7",
+      });
+    }
+    const label = (text: string, x: number, y: number, anchor: string) => {
+      add(grid, "text", {
+        x: String(x),
+        y: String(y),
+        fill: "#8aa0ae",
+        "font-size": "9",
+        "font-family": "Outfit, Segoe UI, sans-serif",
+        "text-anchor": anchor,
+      }).textContent = text;
+    };
+    label("CRA", MAP_PLOT.left - 6, MAP_PLOT.top + 4, "end");
+    label("45", MAP_PLOT.left - 6, mapXY(0, 45)[1] + 3, "end");
+    label("30", MAP_PLOT.left - 6, mapXY(0, 30)[1] + 3, "end");
+    label("15", MAP_PLOT.left - 6, mapXY(0, 15)[1] + 3, "end");
+    label("15", MAP_PLOT.left - 6, mapXY(0, -15)[1] + 3, "end");
+    label("30", MAP_PLOT.left - 6, mapXY(0, -30)[1] + 3, "end");
+    label("45", MAP_PLOT.left - 6, mapXY(0, -45)[1] + 3, "end");
+    label("CAU", MAP_PLOT.left - 6, MAP_PLOT.bottom + 2, "end");
+    for (const primary of [-90, -60, -30, 30, 60, 90]) {
+      label(String(Math.abs(primary)), mapXY(primary, 0)[0], MAP_PLOT.bottom + 14, "middle");
+    }
+    label("AP", mapXY(0, 0)[0], MAP_PLOT.bottom + 14, "middle");
+    label("RAO", MAP_PLOT.left, MAP_PLOT.bottom + 26, "start");
+    label("LAO", MAP_PLOT.right, MAP_PLOT.bottom + 26, "end");
+    for (const zone of MAP_ZONES) {
+      const [cx, cy] = mapXY(zone.primary, zone.secondary);
+      add(zones, "ellipse", {
+        cx: String(cx),
+        cy: String(cy),
+        rx: String((zone.rx / 180) * plotW),
+        ry: String((zone.ry / 180) * plotH),
+        fill: "none",
+        stroke: "rgba(220,220,220,0.72)",
+        "stroke-width": "1.1",
+        "stroke-dasharray": "2.2 2.4",
+        "data-primary": String(zone.primary),
+        "data-secondary": String(zone.secondary),
+        "pointer-events": "all",
+      });
+    }
+  }
+
+  function updateMap(): void {
+    const oblique =
+      Math.abs(state.primary) < 0.5
+        ? "AP"
+        : state.primary >= 0
+          ? `LAO ${Math.round(state.primary)}°`
+          : `RAO ${Math.round(-state.primary)}°`;
+    const cranial =
+      Math.abs(state.secondary) < 0.5
+        ? "0°"
+        : state.secondary >= 0
+          ? `CRA ${Math.round(state.secondary)}°`
+          : `CAU ${Math.round(-state.secondary)}°`;
+    els["map-oblique"].textContent = oblique;
+    els["map-cranial"].textContent = cranial;
+    const [x, y] = mapXY(state.primary, state.secondary);
+    els["map-marker"].setAttribute("transform", `translate(${x} ${y})`);
+    let best: (typeof MAP_ZONES)[number] | null = null;
+    let bestD = Infinity;
+    for (const zone of MAP_ZONES) {
+      const dx = (state.primary - zone.primary) / zone.rx;
+      const dy = (state.secondary - zone.secondary) / zone.ry;
+      const d = dx * dx + dy * dy;
+      if (d < bestD) {
+        bestD = d;
+        best = zone;
+      }
+    }
+    els["map-current-text"].textContent =
+      best && bestD <= 1
+        ? `${best.name}. ${best.detail}.`
+        : `${formatViewLabel({ primary: state.primary, secondary: state.secondary })}.`;
+  }
+
+  drawMapChart();
+  updateMap();
+
+  els["map-chart"].addEventListener("pointerdown", (e) => {
+    const hit = (e.target as Element).closest?.("[data-primary]");
+    if (hit) {
+      setAngles(Number(hit.getAttribute("data-primary")), Number(hit.getAttribute("data-secondary")));
+      return;
+    }
+    const angles = anglesFromChart(e.clientX, e.clientY);
+    setAngles(angles.primary, angles.secondary);
+  });
+
+  els["map-segments"].addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest("button[data-primary]");
+    if (!btn) return;
+    setAngles(Number(btn.getAttribute("data-primary")), Number(btn.getAttribute("data-secondary")));
+  });
+
+  mapWindow.addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest(".map-detail-toggle");
+    if (!(btn instanceof HTMLElement)) return;
+    const open = btn.getAttribute("aria-expanded") === "true";
+    btn.setAttribute("aria-expanded", open ? "false" : "true");
+    const body = btn.nextElementSibling as HTMLElement | null;
+    if (body) body.hidden = open;
+  });
+
+  function pinFloat(win: HTMLElement): void {
+    const rect = win.getBoundingClientRect();
+    const parent = win.offsetParent as HTMLElement | null;
+    const bounds = parent?.getBoundingClientRect();
+    win.style.left = `${rect.left - (bounds?.left ?? 0)}px`;
+    win.style.top = `${rect.top - (bounds?.top ?? 0)}px`;
+    win.style.right = "auto";
+    win.style.bottom = "auto";
+    win.style.width = `${rect.width}px`;
+    win.style.height = `${rect.height}px`;
+  }
+
+  const mapBar = els["map-window-bar"];
+  const mapResize = els["map-resize"];
+  let mapDrag: { dx: number; dy: number } | null = null;
+  let mapSize: { x: number; y: number; w: number; h: number } | null = null;
+  mapBar.addEventListener("pointerdown", (e) => {
+    pinFloat(mapWindow);
+    const rect = mapWindow.getBoundingClientRect();
+    mapDrag = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+    mapBar.setPointerCapture(e.pointerId);
+  });
+  mapBar.addEventListener("pointermove", (e) => {
+    if (!mapDrag) return;
+    const parent = mapWindow.offsetParent as HTMLElement | null;
+    const bounds = parent?.getBoundingClientRect();
+    const maxX = (bounds?.width ?? window.innerWidth) - mapWindow.offsetWidth;
+    const maxY = (bounds?.height ?? window.innerHeight) - mapWindow.offsetHeight;
+    const x = clamp(e.clientX - (bounds?.left ?? 0) - mapDrag.dx, 8, Math.max(8, maxX - 8));
+    const y = clamp(e.clientY - (bounds?.top ?? 0) - mapDrag.dy, 8, Math.max(8, maxY - 8));
+    mapWindow.style.left = `${x}px`;
+    mapWindow.style.top = `${y}px`;
+  });
+  mapBar.addEventListener("pointerup", () => {
+    mapDrag = null;
+  });
+  mapResize.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    pinFloat(mapWindow);
+    const rect = mapWindow.getBoundingClientRect();
+    mapSize = { x: e.clientX, y: e.clientY, w: rect.width, h: rect.height };
+    mapResize.setPointerCapture(e.pointerId);
+  });
+  mapResize.addEventListener("pointermove", (e) => {
+    if (!mapSize) return;
+    const parent = mapWindow.offsetParent as HTMLElement | null;
+    const bounds = parent?.getBoundingClientRect();
+    const maxW = (bounds?.width ?? window.innerWidth) - mapWindow.offsetLeft - 8;
+    const maxH = (bounds?.height ?? window.innerHeight) - mapWindow.offsetTop - 8;
+    mapWindow.style.width = `${clamp(mapSize.w + (e.clientX - mapSize.x), 320, Math.max(320, maxW))}px`;
+    mapWindow.style.height = `${clamp(mapSize.h + (e.clientY - mapSize.y), 180, Math.max(180, maxH))}px`;
+  });
+  mapResize.addEventListener("pointerup", () => {
+    mapSize = null;
+  });
+
   els["btn-collapse"].addEventListener("click", () => setPanelCollapsed(true));
   els["btn-expand"].addEventListener("click", () => setPanelCollapsed(false));
 
