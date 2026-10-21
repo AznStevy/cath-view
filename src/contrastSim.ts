@@ -1215,8 +1215,13 @@ gl_FragColor.a = 1.0;
       const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
       for (const m of mats) {
         if (on) {
-          const isHeart =
-            obj.parent?.name === "heartShell" || obj.name === "heartShell";
+          let isHeart = false;
+          for (let parent: THREE.Object3D | null = obj; parent; parent = parent.parent) {
+            if (parent.name === "heartShell") {
+              isHeart = true;
+              break;
+            }
+          }
           // Keep a heart the user already made fainter than the inject dim.
           const currentOpacity = "opacity" in m ? m.opacity : 1;
           const heartTarget = Math.min(currentOpacity, DIM_HEART_OPACITY);
