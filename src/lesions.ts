@@ -333,6 +333,8 @@ export function createLesionManager(anatomy: THREE.Object3D): LesionManager {
     mesh.renderOrder = 2;
     mesh.userData.isLesionMesh = true;
     mesh.userData.lesionId = lesion.id;
+    mesh.userData.lesionVesselId = lesion.vesselId;
+    mesh.userData.lesionT = lesion.t;
     mesh.name = `lesion-${lesion.id}`;
     group.add(mesh);
     meshById.set(lesion.id, mesh);

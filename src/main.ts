@@ -27,6 +27,7 @@ import {
   type GraftId,
   type VesselGroup,
 } from "./coronaryAnatomy";
+import { createHeartBeat } from "./heartBeat";
 import { createCarmWindow, createOrientationBox } from "./sceneExtras";
 import { createContrastSim, type InjectionSide } from "./contrastSim";
 import { createLesionEditor } from "./lesionEditor";
@@ -227,6 +228,11 @@ function buildUI(root: HTMLElement): {
                   <span class="swatch" style="background:#6e4c58"></span>
                   <span>Pulmonary artery</span>
                 </label>
+                <label class="vessel-toggle">
+                  <input type="checkbox" id="opt-beat" />
+                  <span class="swatch is-blank" aria-hidden="true"></span>
+                  <span>Beat</span>
+                </label>
               </div>
               </div>
             </div>
@@ -237,7 +243,7 @@ function buildUI(root: HTMLElement): {
                 <span class="graft-detail">Drag to move, picture to rotate, corner to resize</span>
               </span>
             </label>
-            <div class="option-block">
+            <div class="option-block coronary-block">
               <button type="button" class="section-toggle" aria-expanded="true">
                 <h4>Coronaries</h4>
                 ${sectionChevron}
@@ -440,6 +446,7 @@ function buildUI(root: HTMLElement): {
     "opt-chambers",
     "opt-aorta",
     "opt-pa",
+    "opt-beat",
     "opt-carm",
     "graft-toggles",
   ] as const;
@@ -536,6 +543,7 @@ function main() {
   const vessels = anatomy.getObjectByName("vessels");
   const contrastSim = createContrastSim(anatomy);
   const lesionMgr = createLesionManager(anatomy);
+  const heartBeat = createHeartBeat(anatomy);
   const lesionEditor = createLesionEditor(app as HTMLElement);
   const reportImport = createReportImport(app as HTMLElement, (parsed) => {
     lesionMgr.addRecords(
@@ -550,7 +558,15 @@ function main() {
   const viewportEl = document.getElementById("viewport") as HTMLElement;
 
   function syncLesionFlows() {
-    contrastSim.setLesionFlows(lesionMgr.lesionFlows());
+    const flows = lesionMgr.lesionFlows();
+    contrastSim.setLesionFlows(flows);
+    heartBeat.setStenoses(
+      flows.map((lesion) => ({
+        vesselId: lesion.vesselId,
+        t: (lesion.t0 + lesion.t1) / 2,
+        severity: 1 - Math.sqrt(Math.max(0, lesion.residualArea)),
+      })),
+    );
   }
   syncLesionFlows();
 
@@ -683,6 +699,9 @@ function main() {
       setAnatomyPartVisible(anatomy, part, box.checked);
     });
   }
+  (els["opt-beat"] as HTMLInputElement).addEventListener("change", () => {
+    heartBeat.setEnabled((els["opt-beat"] as HTMLInputElement).checked);
+  });
   heartOpacity.addEventListener("input", () => {
     paintHeart(Number(heartOpacity.value) || 0);
   });
@@ -1723,6 +1742,7 @@ function main() {
     lastFrame = now;
 
     contrastSim.update(dt);
+    heartBeat.update(dt);
     if (contrastSim.active) syncSeekUI();
 
     if (state.mode === "cath") {
