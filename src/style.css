@@ -1531,10 +1531,36 @@ html.panel-collapsed .orient-cube {
   cursor: grabbing;
 }
 
-.carm-window canvas {
+.carm-stage {
+  position: relative;
   flex: 1 1 auto;
-  width: 100%;
   min-height: 0;
+}
+
+.carm-alert {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  margin: 0;
+  padding: 0.22rem 0.65rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.01em;
+  color: #ffd7cc;
+  background: rgba(110, 44, 36, 0.92);
+  pointer-events: none;
+}
+
+.carm-alert[hidden] {
+  display: none;
+}
+
+.carm-window canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   display: block;
   cursor: grab;
   touch-action: none;
