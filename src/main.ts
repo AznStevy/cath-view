@@ -358,7 +358,10 @@ function buildUI(root: HTMLElement): {
             <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3 L9 9 M9 3 L3 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
           </button>
         </div>
-        <canvas id="carm-canvas"></canvas>
+        <div class="carm-stage">
+          <p class="carm-alert" id="carm-alert" hidden>Detector colliding with patient</p>
+          <canvas id="carm-canvas"></canvas>
+        </div>
         <button type="button" class="carm-resize" id="carm-resize" aria-label="Resize window"></button>
       </div>
 
@@ -427,6 +430,7 @@ function buildUI(root: HTMLElement): {
     "carm-window",
     "carm-window-bar",
     "carm-canvas",
+    "carm-alert",
     "carm-resize",
     "carm-close",
     "heart-opacity",
@@ -561,6 +565,8 @@ function main() {
   const camGoal = cathCameraPosition(state, CAMERA_DISTANCE);
   /** 1 = snap, lower = smoother follow while dragging sliders / holding keys */
   let camLerp = 1;
+  /** True for the frame a preset (or reset) asks the C-arm to ease into place. */
+  let carmEase = false;
 
   function applyCathCamera(animate = false) {
     camGoal.copy(cathCameraPosition(state, CAMERA_DISTANCE));
@@ -603,6 +609,7 @@ function main() {
     state.primary = clamp(primary, -90, 90);
     state.secondary = clamp(secondary, -90, 90);
     syncUIFromState();
+    if (animate) carmEase = true;
     if (state.mode === "cath") applyCathCamera(animate);
   }
 
@@ -1724,8 +1731,13 @@ function main() {
       controls.update();
     }
     const carmAngles = { primary: state.primary, secondary: state.secondary };
+    carmView.step(carmAngles, dt, carmEase);
+    carmEase = false;
     orientView.render(camera);
-    if (!carmWindow.hidden) carmView.render(carmAngles);
+    if (!carmWindow.hidden) {
+      const contacting = carmView.render();
+      els["carm-alert"].hidden = !contacting;
+    }
     contrastSim.render(renderer, scene, camera);
   }
   animate();
