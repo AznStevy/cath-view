@@ -3,6 +3,7 @@ import {
   createDyeUniforms,
   type ContrastVessel,
 } from "./contrastSim";
+import { touchBeat } from "./heartBeat";
 
 /** Toggle groups in the vessel panel */
 export type VesselGroup =
@@ -782,6 +783,7 @@ function createVesselMesh(spec: PathSpec): THREE.Mesh {
   mesh.userData.vesselName = spec.name;
   mesh.userData.vesselDetail = spec.detail;
   mesh.userData.isVessel = true;
+  mesh.userData.beats = true;
   mesh.userData.takeoffPoint = new THREE.Vector3(...anchor);
   mesh.name = `vessel-${spec.id}`;
 
@@ -797,6 +799,7 @@ function createVesselMesh(spec: PathSpec): THREE.Mesh {
     );
     endCap.userData.vesselGroup = spec.group;
     endCap.userData.isVessel = true;
+    endCap.userData.beatsRigid = true;
     mesh.add(endCap);
     materials.push(endCapMat);
   }
@@ -957,15 +960,18 @@ function addHeartParts(group: THREE.Group, parts: HeartPartJson[]): void {
     // BodyParts3D meshes already seated on these chambers, shown in place of the drawn tubes.
     if (AORTA_MESH_IDS.has(part.id)) {
       mesh.name = part.id;
+      mesh.userData.beats = true;
       aortaMount.add(mesh);
       continue;
     }
     if (part.id === "pa") {
       mesh.name = part.id;
+      mesh.userData.beats = true;
       pulmonary.add(mesh);
       continue;
     }
     mesh.name = "myocardium";
+    mesh.userData.beats = true;
     chambers.add(mesh);
   }
   if (!SHOW_PREMADE_GREAT_VESSELS) {
@@ -974,6 +980,7 @@ function addHeartParts(group: THREE.Group, parts: HeartPartJson[]): void {
   }
   group.add(chambers, aortaMount, pulmonary);
   applyHeartOpacity(group);
+  touchBeat(group);
 }
 
 export type AnatomyPart = "chambers" | "aorta" | "pa";
@@ -1004,6 +1011,7 @@ function addGreatVesselTube(
     mat,
   );
   mesh.name = name;
+  mesh.userData.beats = true;
   mesh.raycast = () => {};
   group.add(mesh);
   const capAt = (t: number, capRadius: number) => {
@@ -1499,6 +1507,7 @@ function createGraftMesh(
   mesh.name = `vessel-${id}`;
   const tag = (obj: THREE.Object3D) => {
     obj.userData.isVessel = true;
+    obj.userData.beats = true;
     obj.userData.isGraft = true;
     obj.userData.graftId = id;
     obj.userData.vesselName = name;
